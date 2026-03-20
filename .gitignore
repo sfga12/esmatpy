@@ -1,0 +1,28 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ESMAT Data caches
+enlil_cache/
+*.nc
+*.tar.gz
+data/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
