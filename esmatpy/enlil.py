@@ -75,7 +75,7 @@ def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache
                 all_nc_files.append(f)
         
         try:
-            ds = xr.open_mfdataset(nc_files, engine='netcdf4')
+            ds = xr.open_mfdataset(nc_files, engine='netcdf4', decode_timedelta=True)
             
             max_ns = None
             if 'time' in ds.coords or 'time' in ds.data_vars:
@@ -112,7 +112,7 @@ def load_enlil_dataset(nc_files: list):
     if not nc_files:
         return None
     try:
-        ds = xr.open_mfdataset(nc_files, engine='netcdf4')
+        ds = xr.open_mfdataset(nc_files, engine='netcdf4', decode_timedelta=True)
         return ds
     except Exception:
-        return [xr.open_dataset(f, engine='netcdf4') for f in nc_files]
+        return [xr.open_dataset(f, engine='netcdf4', decode_timedelta=True) for f in nc_files]
