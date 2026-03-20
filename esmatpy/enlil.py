@@ -9,9 +9,6 @@ from pathlib import Path
 BASE_URL = "https://data.ngdc.noaa.gov/earth-science-services/models/space-weather/wsa-enlil"
 
 def fetch_enlil_data_for_date(date: datetime, run_time: str = "0000", cache_dir: str = "enlil_cache"):
-    """
-    Downloads WSA-Enlil solar wind data for a specific model run date.
-    """
     year_str = date.strftime("%Y")
     month_str = date.strftime("%m")
     date_str = date.strftime("%Y%m%d")
@@ -26,15 +23,13 @@ def fetch_enlil_data_for_date(date: datetime, run_time: str = "0000", cache_dir:
     extract_dir = cache_path / f"extracted_{date_str}_{run_time}"
     
     if not tar_path.exists():
-        print(f"Downloading {filename} from {url}...")
+        print(f"Downloading {filename}...")
         response = requests.get(url, stream=True)
         if response.status_code == 200:
             with open(tar_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
-            print("Download complete.")
         else:
-            print(f"Failed to download {url} (Status {response.status_code})")
             return None
             
     if not extract_dir.exists() or not list(extract_dir.rglob("*.nc")):
@@ -43,34 +38,28 @@ def fetch_enlil_data_for_date(date: datetime, run_time: str = "0000", cache_dir:
         try:
             with tarfile.open(tar_path, 'r:gz') as tar:
                 tar.extractall(path=extract_dir)
-            print("Extraction complete.")
-        except Exception as e:
-            print(f"Failed to extract {filename}: {e}")
+        except Exception:
             return None
+            
+    if tar_path.exists() and list(extract_dir.rglob("*.nc")):
+        try:
+            tar_path.unlink()
+        except OSError:
+            pass
             
     return list(extract_dir.rglob("*.nc"))
 
 def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache_dir: str = "enlil_cache"):
-    """
-    Akıllı İndirme: Belirtilen başlangıç tarihinden dosyayı indirir. .nc dosyasını okuyup,
-    içerisindeki verinin hangi tarihe kadar uzandığına (max time) bakar. Eğer kullanıcının 
-    belirttiği Bitiş Tarihine (end_date) henüz ulaşılamamışsa, var olan dosyanın bittiği 
-    tarihten itibaren yeni bir dosyayı indirmeye başlar.
-    """
     start = datetime.strptime(start_date, "%Y-%m-%d")
     end = datetime.strptime(end_date, "%Y-%m-%d")
     
     current_request_date = start
     all_nc_files = []
     
-    print(f"Fetching data from {start_date} to {end_date}...")
-    
     while current_request_date <= end:
-        print(f"\nChecking Model Run for Date: {current_request_date.strftime('%Y-%m-%d')}")
         nc_files = fetch_enlil_data_for_date(current_request_date, run_time, cache_dir)
         
         if not nc_files:
-            print(f"No run found for {current_request_date.strftime('%Y-%m-%d')}. Advancing by 1 day.")
             current_request_date += timedelta(days=1)
             continue
             
@@ -81,30 +70,20 @@ def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache
         try:
             ds = xr.open_mfdataset(nc_files, engine='netcdf4')
             
-            # Zaman araligini bulalim
-            # DİKKAT: NOAA verilerinde zaman 'timedelta64' (fark) olarak gelir. Asıl tarih REFDATE_CAL'dir.
             max_ns = None
             if 'time' in ds.coords or 'time' in ds.data_vars:
-                # pandas datetime'i olarak ns cekmek en guvenlisidir
                 max_ns = pd.Series(ds.time.values).max()
             elif 'Earth_TIME' in ds.coords or 'Earth_TIME' in ds.data_vars:
                 max_ns = pd.Series(ds.Earth_TIME.values).max()
                 
             if max_ns is not None:
-                # Referans tarihi .nc attributelerinde mevcuttur
                 ref_date_str = ds.attrs.get('REFDATE_CAL', current_request_date.strftime('%Y-%m-%dT00:00:00'))
                 ref_date = pd.to_datetime(ref_date_str)
                 
-                # max_ns icerisinde timedelta objesi vardir. Direkt ekleyebiliriz.
                 max_time_dt = ref_date + max_ns
-                
-                # Saati sıfırlayıp sadece güne odaklanalım
                 max_date = datetime(max_time_dt.year, max_time_dt.month, max_time_dt.day)
                 
-                print(f"-> This file covers up to: {max_date.strftime('%Y-%m-%d')}")
-                
                 if max_date >= end:
-                    print("-> Required date range has been successfully covered!")
                     ds.close()
                     break
                 else:
@@ -117,8 +96,7 @@ def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache
                 
             ds.close()
             
-        except Exception as e:
-            print(f"Could not automatically read time coverage: {e}")
+        except Exception:
             current_request_date += timedelta(days=1)
             
     return all_nc_files
@@ -129,7 +107,5 @@ def load_enlil_dataset(nc_files: list):
     try:
         ds = xr.open_mfdataset(nc_files, engine='netcdf4')
         return ds
-    except Exception as e:
-        print(f"Error loading datasets as multi-file dataset: {e}")
-        print("Falling back to reading files individually...")
+    except Exception:
         return [xr.open_dataset(f, engine='netcdf4') for f in nc_files]
