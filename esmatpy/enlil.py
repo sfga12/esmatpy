@@ -55,8 +55,7 @@ def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache
     Akıllı İndirme: Belirtilen başlangıç tarihinden dosyayı indirir. .nc dosyasını okuyup,
     içerisindeki verinin hangi tarihe kadar uzandığına (max time) bakar. Eğer kullanıcının 
     belirttiği Bitiş Tarihine (end_date) henüz ulaşılamamışsa, var olan dosyanın bittiği 
-    tarihten itibaren yeni bir dosyayı indirmeye başlar. Böylece 10 aylık veriyi de hiç 
-    boş yere üst üste bindirmeden en az indirmeyle çeker.
+    tarihten itibaren yeni bir dosyayı indirmeye başlar.
     """
     start = datetime.strptime(start_date, "%Y-%m-%d")
     end = datetime.strptime(end_date, "%Y-%m-%d")
@@ -75,26 +74,30 @@ def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache
             current_request_date += timedelta(days=1)
             continue
             
-        # Listeye ekle (eğer daha önceden eklendiyse set mantığıyla engelleriz gerçi ama list yeterli)
         for f in nc_files:
             if f not in all_nc_files:
                 all_nc_files.append(f)
         
-        # Dosyanın içindeki en ileri tarihi (max_time) bulalım
         try:
-            # decode_times=False koymadık çünkü zamanı okuyacağız.
             ds = xr.open_mfdataset(nc_files, engine='netcdf4')
             
-            # Zaman aralığı koordinatını bulalım ('time' veya uydular için)
+            # Zaman araligini bulalim
+            # DİKKAT: NOAA verilerinde zaman 'timedelta64' (fark) olarak gelir. Asıl tarih REFDATE_CAL'dir.
+            max_ns = None
             if 'time' in ds.coords or 'time' in ds.data_vars:
-                max_time_val = ds.time.max().values
+                # pandas datetime'i olarak ns cekmek en guvenlisidir
+                max_ns = pd.Series(ds.time.values).max()
             elif 'Earth_TIME' in ds.coords or 'Earth_TIME' in ds.data_vars:
-                max_time_val = ds.Earth_TIME.max().values
-            else:
-                max_time_val = None
+                max_ns = pd.Series(ds.Earth_TIME.values).max()
                 
-            if max_time_val is not None:
-                max_time_dt = pd.to_datetime(str(max_time_val)).to_pydatetime()
+            if max_ns is not None:
+                # Referans tarihi .nc attributelerinde mevcuttur
+                ref_date_str = ds.attrs.get('REFDATE_CAL', current_request_date.strftime('%Y-%m-%dT00:00:00'))
+                ref_date = pd.to_datetime(ref_date_str)
+                
+                # max_ns icerisinde timedelta objesi vardir. Direkt ekleyebiliriz.
+                max_time_dt = ref_date + max_ns
+                
                 # Saati sıfırlayıp sadece güne odaklanalım
                 max_date = datetime(max_time_dt.year, max_time_dt.month, max_time_dt.day)
                 
@@ -105,8 +108,6 @@ def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache
                     ds.close()
                     break
                 else:
-                    # Ufak bir çakışma (overlap) olmaması için direkt kaldığı günden sonrasını çekebiliriz
-                    # Ama Enlil run'ları her gün tam aynı saatte çıktığı için en güvenlisi max_date'den devam etmektir.
                     if max_date > current_request_date:
                         current_request_date = max_date
                     else:
