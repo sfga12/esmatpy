@@ -38,6 +38,13 @@ def fetch_enlil_data_for_date(date: datetime, run_time: str = "0000", cache_dir:
         try:
             with tarfile.open(tar_path, 'r:gz') as tar:
                 tar.extractall(path=extract_dir)
+                
+            for item in extract_dir.rglob("*"):
+                if item.is_file() and item.suffix != '.nc':
+                    try:
+                        item.unlink()
+                    except OSError:
+                        pass
         except Exception:
             return None
             
