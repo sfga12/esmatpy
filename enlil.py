@@ -2,7 +2,8 @@ import os
 import requests
 import tarfile
 import xarray as xr
-from datetime import datetime
+import pandas as pd
+from datetime import datetime, timedelta
 from pathlib import Path
 
 BASE_URL = "https://data.ngdc.noaa.gov/earth-science-services/models/space-weather/wsa-enlil"
@@ -10,7 +11,6 @@ BASE_URL = "https://data.ngdc.noaa.gov/earth-science-services/models/space-weath
 def fetch_enlil_data_for_date(date: datetime, run_time: str = "0000", cache_dir: str = "enlil_cache"):
     """
     Downloads WSA-Enlil solar wind data for a specific model run date.
-    A single run typically covers ~20 days of data (hindcast + forecast).
     """
     year_str = date.strftime("%Y")
     month_str = date.strftime("%m")
@@ -25,7 +25,6 @@ def fetch_enlil_data_for_date(date: datetime, run_time: str = "0000", cache_dir:
     tar_path = cache_path / filename
     extract_dir = cache_path / f"extracted_{date_str}_{run_time}"
     
-    # Download file if not cached
     if not tar_path.exists():
         print(f"Downloading {filename} from {url}...")
         response = requests.get(url, stream=True)
@@ -38,7 +37,6 @@ def fetch_enlil_data_for_date(date: datetime, run_time: str = "0000", cache_dir:
             print(f"Failed to download {url} (Status {response.status_code})")
             return None
             
-    # Extract file if not extracted
     if not extract_dir.exists() or not list(extract_dir.rglob("*.nc")):
         print(f"Extracting {filename}...")
         extract_dir.mkdir(parents=True, exist_ok=True)
@@ -50,29 +48,83 @@ def fetch_enlil_data_for_date(date: datetime, run_time: str = "0000", cache_dir:
             print(f"Failed to extract {filename}: {e}")
             return None
             
-    # Find and return all .nc files
-    nc_files = list(extract_dir.rglob("*.nc"))
-    return nc_files
+    return list(extract_dir.rglob("*.nc"))
 
-def get_enlil_data(run_date: str, run_time: str = "0000", cache_dir: str = "enlil_cache"):
+def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache_dir: str = "enlil_cache"):
     """
-    Fetches the ENLIL .nc data files for a specific Model Run Date.
-    Since one run contains a large time window (e.g. 20 days), we only need 
-    to download the single run that covers our desired timeframe.
-    run_date should be in 'YYYY-MM-DD' format.
+    Akıllı İndirme: Belirtilen başlangıç tarihinden dosyayı indirir. .nc dosyasını okuyup,
+    içerisindeki verinin hangi tarihe kadar uzandığına (max time) bakar. Eğer kullanıcının 
+    belirttiği Bitiş Tarihine (end_date) henüz ulaşılamamışsa, var olan dosyanın bittiği 
+    tarihten itibaren yeni bir dosyayı indirmeye başlar. Böylece 10 aylık veriyi de hiç 
+    boş yere üst üste bindirmeden en az indirmeyle çeker.
     """
-    date_obj = datetime.strptime(run_date, "%Y-%m-%d")
-    nc_files = fetch_enlil_data_for_date(date_obj, run_time, cache_dir)
-    return nc_files
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+    
+    current_request_date = start
+    all_nc_files = []
+    
+    print(f"Fetching data from {start_date} to {end_date}...")
+    
+    while current_request_date <= end:
+        print(f"\nChecking Model Run for Date: {current_request_date.strftime('%Y-%m-%d')}")
+        nc_files = fetch_enlil_data_for_date(current_request_date, run_time, cache_dir)
+        
+        if not nc_files:
+            print(f"No run found for {current_request_date.strftime('%Y-%m-%d')}. Advancing by 1 day.")
+            current_request_date += timedelta(days=1)
+            continue
+            
+        # Listeye ekle (eğer daha önceden eklendiyse set mantığıyla engelleriz gerçi ama list yeterli)
+        for f in nc_files:
+            if f not in all_nc_files:
+                all_nc_files.append(f)
+        
+        # Dosyanın içindeki en ileri tarihi (max_time) bulalım
+        try:
+            # decode_times=False koymadık çünkü zamanı okuyacağız.
+            ds = xr.open_mfdataset(nc_files, engine='netcdf4')
+            
+            # Zaman aralığı koordinatını bulalım ('time' veya uydular için)
+            if 'time' in ds.coords or 'time' in ds.data_vars:
+                max_time_val = ds.time.max().values
+            elif 'Earth_TIME' in ds.coords or 'Earth_TIME' in ds.data_vars:
+                max_time_val = ds.Earth_TIME.max().values
+            else:
+                max_time_val = None
+                
+            if max_time_val is not None:
+                max_time_dt = pd.to_datetime(str(max_time_val)).to_pydatetime()
+                # Saati sıfırlayıp sadece güne odaklanalım
+                max_date = datetime(max_time_dt.year, max_time_dt.month, max_time_dt.day)
+                
+                print(f"-> This file covers up to: {max_date.strftime('%Y-%m-%d')}")
+                
+                if max_date >= end:
+                    print("-> Required date range has been successfully covered!")
+                    ds.close()
+                    break
+                else:
+                    # Ufak bir çakışma (overlap) olmaması için direkt kaldığı günden sonrasını çekebiliriz
+                    # Ama Enlil run'ları her gün tam aynı saatte çıktığı için en güvenlisi max_date'den devam etmektir.
+                    if max_date > current_request_date:
+                        current_request_date = max_date
+                    else:
+                        current_request_date += timedelta(days=1)
+            else:
+                current_request_date += timedelta(days=1)
+                
+            ds.close()
+            
+        except Exception as e:
+            print(f"Could not automatically read time coverage: {e}")
+            current_request_date += timedelta(days=1)
+            
+    return all_nc_files
 
 def load_enlil_dataset(nc_files: list):
-    """
-    Attempts to load a list of .nc files using xarray.
-    Returns the parsed xarray Dataset containing 3D solar wind variables.
-    """
     if not nc_files:
         return None
-        
     try:
         ds = xr.open_mfdataset(nc_files, engine='netcdf4')
         return ds
