@@ -38,15 +38,10 @@ def fetch_enlil_data_for_date(date: datetime, run_time: str = "0000", cache_dir:
         extract_dir.mkdir(parents=True, exist_ok=True)
         try:
             with tarfile.open(tar_path, 'r:gz') as tar:
-                tar.extractall(path=extract_dir)
-                
-            for item in extract_dir.rglob("*"):
-                if item.is_file() and item.suffix != '.nc':
-                    try:
-                        item.unlink()
-                    except OSError:
-                        pass
-        except Exception:
+                nc_members = [m for m in tar.getmembers() if m.name.endswith('.nc')]
+                tar.extractall(path=extract_dir, members=nc_members)
+        except Exception as e:
+            print(f"Extraction failed: {e}")
             return None
             
     if tar_path.exists() and list(extract_dir.rglob("*.nc")):
