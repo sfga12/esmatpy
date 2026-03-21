@@ -116,3 +116,47 @@ def load_enlil_dataset(nc_files: list):
         return ds
     except Exception:
         return [xr.open_dataset(f, engine='netcdf4', decode_timedelta=True) for f in nc_files]
+
+def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: str, run_time: str = "0000", cache_dir: str = "enlil_cache"):
+    """
+    Downloads data for the given date range, crops it strictly within start_date and end_date,
+    and saves it to a single NetCDF (.nc) file.
+    """
+    nc_files = get_enlil_data(start_date, end_date, run_time, cache_dir)
+    if not nc_files:
+        print("No files found for the given dates.")
+        return None
+        
+    ds = load_enlil_dataset(nc_files)
+    if isinstance(ds, list):
+        print("Could not merge datasets automatically. Cropping is not supported for lists.")
+        return None
+
+    start_dt = pd.to_datetime(start_date)
+    # Include up to the exact end of the requested end_date
+    end_dt = pd.to_datetime(end_date) + timedelta(days=1) - pd.Timedelta(seconds=1)
+    
+    time_var = None
+    if 'time' in ds.coords or 'time' in ds.data_vars:
+        time_var = 'time'
+    elif 'Earth_TIME' in ds.coords or 'Earth_TIME' in ds.data_vars:
+        time_var = 'Earth_TIME'
+        
+    if time_var is not None:
+        ref_date_str = ds.attrs.get('REFDATE_CAL', start_dt.strftime('%Y-%m-%dT00:00:00'))
+        ref_date = pd.to_datetime(ref_date_str)
+        
+        start_td = start_dt - ref_date
+        end_td = end_dt - ref_date
+        
+        dim_name = time_var if time_var in ds.dims else ds[time_var].dims[0]
+        
+        ds_cropped = ds.sel({dim_name: slice(start_td, end_td)})
+        
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        ds_cropped.to_netcdf(output_path)
+        print(f"Data successfully cropped and saved to {output_path}")
+        return output_path
+    else:
+        print("Could not determine time variable to crop data.")
+        return None
