@@ -159,5 +159,23 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
     
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     ds_cropped.to_netcdf(output_path)
+    
+    # Close datasets to release file locks (crucial before deletion)
+    ds_cropped.close()
+    ds.close()
+    
+    # Clean up massive uncropped original files to save disk/cache space
+    for nc_file in nc_files:
+        try:
+            nc_path = Path(nc_file)
+            if nc_path.exists():
+                nc_path.unlink()
+            # Remove the extracted date folder if it became empty
+            if nc_path.parent.exists() and nc_path.parent.is_dir() and not any(nc_path.parent.iterdir()):
+                nc_path.parent.rmdir()
+        except Exception as e:
+            pass # Keep silent if deletion fails due to OS locks
+
     print(f"Data successfully cropped and saved to {output_path}")
+    print(f"Removed {len(nc_files)} original uncropped cache file(s) to save space.")
     return output_path
