@@ -1,6 +1,7 @@
 import os
 import requests
 import tarfile
+import numpy as np
 import xarray as xr
 import pandas as pd
 from datetime import datetime, timedelta
@@ -151,7 +152,11 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
         
         dim_name = time_var if time_var in ds.dims else ds[time_var].dims[0]
         
-        mask = ((ds[time_var] >= start_td) & (ds[time_var] <= end_td)).values
+        # Convert pandas Timedelta to numpy timedelta64[ns] to avoid Dask Array comparison TypeError
+        start_np = np.timedelta64(start_td.value, 'ns')
+        end_np = np.timedelta64(end_td.value, 'ns')
+        
+        mask = ((ds[time_var] >= start_np) & (ds[time_var] <= end_np)).values
         ds_cropped = ds.isel({dim_name: mask})
         
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
