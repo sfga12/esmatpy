@@ -137,32 +137,32 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
     # Include up to the exact end of the requested end_date
     end_dt = pd.to_datetime(end_date) + timedelta(days=1) - pd.Timedelta(seconds=1)
     
-    time_var = None
-    if 'time' in ds.coords or 'time' in ds.data_vars:
-        time_var = 'time'
-    elif 'Earth_TIME' in ds.coords or 'Earth_TIME' in ds.data_vars:
-        time_var = 'Earth_TIME'
-        
-    if time_var is not None:
-        ref_date_str = ds.attrs.get('REFDATE_CAL', start_dt.strftime('%Y-%m-%dT00:00:00'))
-        ref_date = pd.to_datetime(ref_date_str)
-        
-        start_td = start_dt - ref_date
-        end_td = end_dt - ref_date
-        
-        dim_name = time_var if time_var in ds.dims else ds[time_var].dims[0]
-        
-        # Convert pandas Timedelta to numpy timedelta64[ns] to avoid Dask Array comparison TypeError
-        start_np = np.timedelta64(start_td.value, 'ns')
-        end_np = np.timedelta64(end_td.value, 'ns')
-        
-        mask = ((ds[time_var] >= start_np) & (ds[time_var] <= end_np)).values
-        ds_cropped = ds.isel({dim_name: mask})
-        
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        ds_cropped.to_netcdf(output_path)
-        print(f"Data successfully cropped and saved to {output_path}")
-        return output_path
-    else:
-        print("Could not determine time variable to crop data.")
+    isel_args = {}
+    
+    for t_var in ['time', 'Earth_TIME']:
+        if t_var in ds.coords or t_var in ds.data_vars:
+            ref_date_str = ds.attrs.get('REFDATE_CAL', start_dt.strftime('%Y-%m-%dT00:00:00'))
+            ref_date = pd.to_datetime(ref_date_str)
+            
+            start_td = start_dt - ref_date
+            end_td = end_dt - ref_date
+            
+            # Convert pandas Timedelta to numpy timedelta64[ns] to avoid Dask Array comparison TypeError
+            start_np = np.timedelta64(start_td.value, 'ns')
+            end_np = np.timedelta64(end_td.value, 'ns')
+            
+            mask = ((ds[t_var] >= start_np) & (ds[t_var] <= end_np)).values
+            dim_name = t_var if t_var in ds.dims else ds[t_var].dims[0]
+            
+            isel_args[dim_name] = mask
+
+    if not isel_args:
+        print("Could not determine any time variable to crop data.")
         return None
+        
+    ds_cropped = ds.isel(isel_args)
+    
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    ds_cropped.to_netcdf(output_path)
+    print(f"Data successfully cropped and saved to {output_path}")
+    return output_path
