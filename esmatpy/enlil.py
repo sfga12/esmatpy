@@ -151,7 +151,8 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
         
         dim_name = time_var if time_var in ds.dims else ds[time_var].dims[0]
         
-        ds_cropped = ds.sel({dim_name: slice(start_td, end_td)})
+        mask = ((ds[time_var] >= start_td) & (ds[time_var] <= end_td)).values
+        ds_cropped = ds.isel({dim_name: mask})
         
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         ds_cropped.to_netcdf(output_path)
