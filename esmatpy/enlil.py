@@ -14,43 +14,54 @@ def fetch_enlil_data_for_date(date: datetime, run_time: str = "0000", cache_dir:
     month_str = date.strftime("%m")
     date_str = date.strftime("%Y%m%d")
     
-    filename = f"swpc_wsaenlil_bkg_{date_str}_{run_time}.tar.gz"
-    url = f"{BASE_URL}/{year_str}/{month_str}/{filename}"
-    
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
     
-    tar_path = cache_path / filename
-    extract_dir = cache_path / f"extracted_{date_str}_{run_time}"
-    
-    if not tar_path.exists():
-        print(f"Downloading {filename}...")
-        response = requests.get(url, stream=True)
-        if response.status_code == 200:
-            with open(tar_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-        else:
-            return None
+    run_times_to_try = [run_time]
+    if run_time == "0000":
+        run_times_to_try.extend(["1200", "0600", "1800"])
+        
+    for rt in run_times_to_try:
+        filename = f"swpc_wsaenlil_bkg_{date_str}_{rt}.tar.gz"
+        url = f"{BASE_URL}/{year_str}/{month_str}/{filename}"
+        
+        tar_path = cache_path / filename
+        extract_dir = cache_path / f"extracted_{date_str}_{rt}"
+        
+        if not tar_path.exists():
+            print(f"Downloading {filename}...")
+            response = requests.get(url, stream=True)
+            if response.status_code == 200:
+                with open(tar_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            else:
+                continue
+                
+        if not extract_dir.exists() or not list(extract_dir.rglob("*.nc")):
+            print(f"Extracting {filename}...")
+            extract_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                with tarfile.open(tar_path, 'r:gz') as tar:
+                    nc_members = [m for m in tar.getmembers() if m.name.endswith('.nc')]
+                    if not nc_members:
+                        continue
+                    tar.extractall(path=extract_dir, members=nc_members)
+            except Exception as e:
+                print(f"Extraction failed: {e}")
+                continue
+                
+        if tar_path.exists() and list(extract_dir.rglob("*.nc")):
+            try:
+                tar_path.unlink()
+            except OSError:
+                pass
+                
+        nc_files = list(extract_dir.rglob("*.nc"))
+        if nc_files:
+            return nc_files
             
-    if not extract_dir.exists() or not list(extract_dir.rglob("*.nc")):
-        print(f"Extracting {filename}...")
-        extract_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            with tarfile.open(tar_path, 'r:gz') as tar:
-                nc_members = [m for m in tar.getmembers() if m.name.endswith('.nc')]
-                tar.extractall(path=extract_dir, members=nc_members)
-        except Exception as e:
-            print(f"Extraction failed: {e}")
-            return None
-            
-    if tar_path.exists() and list(extract_dir.rglob("*.nc")):
-        try:
-            tar_path.unlink()
-        except OSError:
-            pass
-            
-    return list(extract_dir.rglob("*.nc"))
+    return []
 
 def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache_dir: str = "enlil_cache"):
     start = datetime.strptime(start_date, "%Y-%m-%d")
@@ -62,45 +73,13 @@ def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache
     while current_request_date <= end:
         nc_files = fetch_enlil_data_for_date(current_request_date, run_time, cache_dir)
         
-        if not nc_files:
-            current_request_date += timedelta(days=1)
-            continue
-            
-        for f in nc_files:
-            if f not in all_nc_files:
-                all_nc_files.append(f)
-        
-        try:
-            ds = xr.open_mfdataset(nc_files, engine='netcdf4', decode_timedelta=True)
-            
-            max_ns = None
-            if 'time' in ds.coords or 'time' in ds.data_vars:
-                max_ns = pd.Series(ds.time.values).max()
-            elif 'Earth_TIME' in ds.coords or 'Earth_TIME' in ds.data_vars:
-                max_ns = pd.Series(ds.Earth_TIME.values).max()
-                
-            if max_ns is not None:
-                ref_date_str = ds.attrs.get('REFDATE_CAL', current_request_date.strftime('%Y-%m-%dT00:00:00'))
-                ref_date = pd.to_datetime(ref_date_str)
-                
-                max_time_dt = ref_date + max_ns
-                max_date = datetime(max_time_dt.year, max_time_dt.month, max_time_dt.day)
-                
-                if max_date >= end:
-                    ds.close()
-                    break
-                else:
-                    if max_date > current_request_date:
-                        current_request_date = max_date
-                    else:
-                        current_request_date += timedelta(days=1)
-            else:
-                current_request_date += timedelta(days=1)
-                
-            ds.close()
-            
-        except Exception:
-            current_request_date += timedelta(days=1)
+        if nc_files:
+            for f in nc_files:
+                if str(f) not in [str(af) for af in all_nc_files]:
+                    all_nc_files.append(f)
+                    
+        # Always fetch adjacent days natively to capture emerging CMEs
+        current_request_date += timedelta(days=1)
             
     return all_nc_files
 
@@ -140,19 +119,16 @@ def load_enlil_dataset(nc_files: list):
         return datasets[0]
         
     try:
-        # Merge by coordinates, dropping overlapping timeline duplicates
-        ds_combined = xr.combine_by_coords(datasets, combine_attrs='override')
-        
-        for dim in ['time', 'Earth_TIME']:
-            if dim in ds_combined.dims:
-                # Deduplicate overlapping continuous run segments to preserve a clean single timeline
-                idx = ds_combined.indexes[dim]
-                keep_mask = ~idx.duplicated(keep='last')
-                ds_combined = ds_combined.isel(**{dim: keep_mask})
+        # ds.combine_first() iteratively overwrites overlapping coordinates
+        # Since datasets chronologically step forward, iterating in reverse lets
+        # the newer forecasts supersede older runs over shared forecast dates.
+        ds_combined = datasets[-1]
+        for ds in reversed(datasets[:-1]):
+            ds_combined = ds_combined.combine_first(ds)
                 
         return ds_combined
     except Exception as e:
-        print(f"combine_by_coords failed: {e}. Returning unmerged dataset list.")
+        print(f"combine_first failed: {e}. Returning unmerged dataset list.")
         return datasets
 
 def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: str, run_time: str = "0000", cache_dir: str = "enlil_cache", vars_to_keep: list = None):
