@@ -107,11 +107,53 @@ def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache
 def load_enlil_dataset(nc_files: list):
     if not nc_files:
         return None
+    
+    datasets = []
+    for f in sorted(nc_files):  # Sort to enforce chronological ordering of runs
+        try:
+            ds = xr.open_dataset(f, engine='netcdf4', decode_timedelta=True)
+            ref_date_str = ds.attrs.get('REFDATE_CAL')
+            if ref_date_str:
+                ref_date = pd.to_datetime(ref_date_str)
+                # Convert timedeltas to absolute datetimes
+                for t_var in ['time', 'Earth_TIME']:
+                    if t_var in ds.variables:
+                        ds.coords[t_var] = ref_date + ds[t_var]
+                
+                # Swap index dimensions so xarray can logically merge disparate files
+                dims_to_swap = {}
+                if 'time' in ds.coords and ds.coords['time'].dims == ('t',):
+                    dims_to_swap['t'] = 'time'
+                if 'Earth_TIME' in ds.coords and ds.coords['Earth_TIME'].dims == ('earth_t',):
+                    dims_to_swap['earth_t'] = 'Earth_TIME'
+                    
+                if dims_to_swap:
+                    ds = ds.swap_dims(dims_to_swap)
+                
+            datasets.append(ds)
+        except Exception as e:
+            print(f"Warning: Could not optimally load {f}: {e}")
+            
+    if not datasets:
+        return None
+    if len(datasets) == 1:
+        return datasets[0]
+        
     try:
-        ds = xr.open_mfdataset(nc_files, engine='netcdf4', decode_timedelta=True)
-        return ds
-    except Exception:
-        return [xr.open_dataset(f, engine='netcdf4', decode_timedelta=True) for f in nc_files]
+        # Merge by coordinates, dropping overlapping timeline duplicates
+        ds_combined = xr.combine_by_coords(datasets, combine_attrs='override')
+        
+        for dim in ['time', 'Earth_TIME']:
+            if dim in ds_combined.dims:
+                # Deduplicate overlapping continuous run segments to preserve a clean single timeline
+                idx = ds_combined.indexes[dim]
+                keep_mask = ~idx.duplicated(keep='last')
+                ds_combined = ds_combined.isel(**{dim: keep_mask})
+                
+        return ds_combined
+    except Exception as e:
+        print(f"combine_by_coords failed: {e}. Returning unmerged dataset list.")
+        return datasets
 
 def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: str, run_time: str = "0000", cache_dir: str = "enlil_cache", vars_to_keep: list = None):
     """
@@ -135,24 +177,34 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
     # Include up to the exact end of the requested end_date
     end_dt = pd.to_datetime(end_date) + timedelta(days=1) - pd.Timedelta(seconds=1)
     
+    start_dt_np = np.datetime64(start_dt)
+    end_dt_np = np.datetime64(end_dt)
+    
     isel_args = {}
     
     for t_var in ['time', 'Earth_TIME']:
         if t_var in ds.coords or t_var in ds.data_vars:
-            ref_date_str = ds.attrs.get('REFDATE_CAL', start_dt.strftime('%Y-%m-%dT00:00:00'))
-            ref_date = pd.to_datetime(ref_date_str)
-            
-            start_td = start_dt - ref_date
-            end_td = end_dt - ref_date
-            
-            # Convert pandas Timedelta to numpy timedelta64[ns] to avoid Dask Array comparison TypeError
-            start_np = np.timedelta64(start_td.value, 'ns')
-            end_np = np.timedelta64(end_td.value, 'ns')
-            
-            mask = ((ds[t_var] >= start_np) & (ds[t_var] <= end_np)).values
-            dim_name = t_var if t_var in ds.dims else ds[t_var].dims[0]
-            
-            isel_args[dim_name] = mask
+            # Check if variable is absolute datetime
+            if np.issubdtype(ds[t_var].dtype, np.datetime64):
+                mask = ((ds[t_var] >= start_dt_np) & (ds[t_var] <= end_dt_np)).values
+                dim_name = t_var if t_var in ds.dims else ds[t_var].dims[0]
+                isel_args[dim_name] = mask
+            else:
+                # Legacy fallback to relative logic
+                ref_date_str = ds.attrs.get('REFDATE_CAL', start_dt.strftime('%Y-%m-%dT00:00:00'))
+                ref_date = pd.to_datetime(ref_date_str)
+                
+                start_td = start_dt - ref_date
+                end_td = end_dt - ref_date
+                
+                # Convert pandas Timedelta to numpy timedelta64[ns]
+                start_np = np.timedelta64(start_td.value, 'ns')
+                end_np = np.timedelta64(end_td.value, 'ns')
+                
+                mask = ((ds[t_var] >= start_np) & (ds[t_var] <= end_np)).values
+                dim_name = t_var if t_var in ds.dims else ds[t_var].dims[0]
+                
+                isel_args[dim_name] = mask
 
     if not isel_args:
         print("Could not determine any time variable to crop data.")
@@ -161,8 +213,8 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
     ds_cropped = ds.isel(isel_args)
     
     if vars_to_keep:
-        existing_vars = [v for v in vars_to_keep if v in ds_cropped.variables]
-        ds_cropped = ds_cropped[existing_vars]
+        vars_to_drop = [v for v in ds_cropped.variables if v not in vars_to_keep]
+        ds_cropped = ds_cropped.drop_vars(vars_to_drop)
     
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     ds_cropped.to_netcdf(output_path)
