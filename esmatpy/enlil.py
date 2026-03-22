@@ -22,14 +22,30 @@ def fetch_enlil_data_for_date(date: datetime, run_time: str = "0000", cache_dir:
         run_times_to_try.extend(["1200", "0600", "1800"])
         
     for rt in run_times_to_try:
-        filename = f"swpc_wsaenlil_bkg_{date_str}_{rt}.tar.gz"
-        url = f"{BASE_URL}/{year_str}/{month_str}/{filename}"
-        
-        tar_path = cache_path / filename
-        extract_dir = cache_path / f"extracted_{date_str}_{rt}"
-        
+        # NOAA publishes both "bkg" (ambient background wind) and various "cme" (storm) runs.
+        # We must prioritize CME runs to accurately graph density strikes, otherwise we just get a flat baseline.
+        found_mode = False
+        for mode in ['cmed', 'cme', 'cmecyl', 'cmec', 'bkg']:
+            filename = f"swpc_wsaenlil_{mode}_{date_str}_{rt}.tar.gz"
+            url = f"{BASE_URL}/{year_str}/{month_str}/{filename}"
+            
+            tar_path = cache_path / filename
+            extract_dir = cache_path / f"extracted_{date_str}_{rt}_{mode}"
+            
+            if tar_path.exists() or extract_dir.exists():
+                found_mode = True
+                break
+                
+            response = requests.head(url)
+            if response.status_code == 200:
+                found_mode = True
+                break
+                
+        if not found_mode:
+            continue
+            
         if not tar_path.exists():
-            print(f"Downloading {filename}...")
+            print(f"Downloading {filename} (Mode: {mode.upper()})...")
             response = requests.get(url, stream=True)
             if response.status_code == 200:
                 with open(tar_path, 'wb') as f:
