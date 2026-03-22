@@ -9,70 +9,67 @@ from pathlib import Path
 
 BASE_URL = "https://data.ngdc.noaa.gov/earth-science-services/models/space-weather/wsa-enlil"
 
-def fetch_enlil_data_for_date(date: datetime, run_time: str = "0000", cache_dir: str = "enlil_cache"):
-    year_str = date.strftime("%Y")
-    month_str = date.strftime("%m")
-    date_str = date.strftime("%Y%m%d")
-    
+def fetch_enlil_data_for_date(date: datetime, default_run_time: str = "0000", cache_dir: str = "enlil_cache") -> list:
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
     
-    run_times_to_try = [run_time]
-    if run_time == "0000":
-        run_times_to_try.extend(["1200", "0600", "1800"])
+    date_str = date.strftime("%Y%m%d")
+    year_str = date.strftime("%Y")
+    month_str = date.strftime("%m")
+    
+    dir_url = f"{BASE_URL}/{year_str}/{month_str}/"
+    try:
+        content = requests.get(dir_url).text
+    except Exception:
+        content = ""
         
-    for rt in run_times_to_try:
-        # NOAA publishes both "bkg" (ambient background wind) and various "cme" (storm) runs.
-        # We must prioritize CME runs to accurately graph density strikes, otherwise we just get a flat baseline.
-        found_mode = False
-        for mode in ['cmed', 'cme', 'cmecyl', 'cmec', 'bkg']:
-            filename = f"swpc_wsaenlil_{mode}_{date_str}_{rt}.tar.gz"
-            url = f"{BASE_URL}/{year_str}/{month_str}/{filename}"
+    import re
+    pattern = r'swpc_wsaenlil_([a-zA-Z]+)_' + date_str + r'_(\d{4})\.tar\.gz'
+    matches = re.findall(pattern, content)
+    
+    if not matches:
+        return []
+
+    cme_matches = [m for m in matches if m[0] != 'bkg']
+    bkg_matches = [m for m in matches if m[0] == 'bkg']
+    
+    if cme_matches:
+        cme_matches.sort(key=lambda x: x[1], reverse=True)
+        best_mode, best_rt = cme_matches[0]
+    elif bkg_matches:
+        bkg_matches.sort(key=lambda x: x[1], reverse=True)
+        best_mode, best_rt = bkg_matches[0]
+    else:
+        return []
+        
+    filename = f"swpc_wsaenlil_{best_mode}_{date_str}_{best_rt}.tar.gz"
+    url = f"{dir_url}{filename}"
+    tar_path = cache_path / filename
+    extract_dir = cache_path / f"extracted_{date_str}_{best_rt}_{best_mode}"
+    
+    if not tar_path.exists() and not extract_dir.exists():
+        print(f"Downloading {filename} (Mode: {best_mode.upper()})...")
+        response = requests.get(url, stream=True)
+        if response.status_code == 200:
+            with open(tar_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+                    
+    if tar_path.exists() and not extract_dir.exists():
+        print(f"Extracting {filename}...")
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            import sys
+            with tarfile.open(tar_path, "r:gz") as tar:
+                if sys.version_info.major == 3 and sys.version_info.minor >= 12:
+                    tar.extractall(path=extract_dir, filter='data')
+                else:
+                    tar.extractall(path=extract_dir)
+            tar_path.unlink()
+        except OSError:
+            pass
             
-            tar_path = cache_path / filename
-            extract_dir = cache_path / f"extracted_{date_str}_{rt}_{mode}"
-            
-            if tar_path.exists() or extract_dir.exists():
-                found_mode = True
-                break
-                
-            response = requests.head(url)
-            if response.status_code == 200:
-                found_mode = True
-                break
-                
-        if not found_mode:
-            continue
-            
-        if not tar_path.exists():
-            print(f"Downloading {filename} (Mode: {mode.upper()})...")
-            response = requests.get(url, stream=True)
-            if response.status_code == 200:
-                with open(tar_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-            else:
-                continue
-                
-        if not extract_dir.exists() or not list(extract_dir.rglob("*.nc")):
-            print(f"Extracting {filename}...")
-            extract_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                with tarfile.open(tar_path, 'r:gz') as tar:
-                    nc_members = [m for m in tar.getmembers() if m.name.endswith('.nc')]
-                    if not nc_members:
-                        continue
-                    tar.extractall(path=extract_dir, members=nc_members)
-            except Exception as e:
-                print(f"Extraction failed: {e}")
-                continue
-                
-        if tar_path.exists() and list(extract_dir.rglob("*.nc")):
-            try:
-                tar_path.unlink()
-            except OSError:
-                pass
-                
+    if extract_dir.exists():
         nc_files = list(extract_dir.rglob("*.nc"))
         if nc_files:
             return nc_files
@@ -150,7 +147,7 @@ def load_enlil_dataset(nc_files: list):
                     
             merged_datasets.append(ds)
             
-        ds_combined = xr.combine_by_coords(merged_datasets, combine_attrs='override')
+        ds_combined = xr.combine_by_coords(merged_datasets, combine_attrs='override', join='outer', data_vars='all')
         return ds_combined
     except Exception as e:
         print(f"combine_by_coords failed on clipped datasets: {e}. Returning unmerged dataset list.")
