@@ -119,16 +119,25 @@ def load_enlil_dataset(nc_files: list):
         return datasets[0]
         
     try:
-        # ds.combine_first() iteratively overwrites overlapping coordinates
-        # Since datasets chronologically step forward, iterating in reverse lets
-        # the newer forecasts supersede older runs over shared forecast dates.
-        ds_combined = datasets[-1]
-        for ds in reversed(datasets[:-1]):
-            ds_combined = ds_combined.combine_first(ds)
+        merged_datasets = []
+        for i in range(len(datasets)):
+            ds = datasets[i]
+            if i < len(datasets) - 1:
+                next_ds = datasets[i+1]
+                limit_time = next_ds.indexes['time'][0] if 'time' in next_ds.indexes else None
+                limit_earth = next_ds.indexes['Earth_TIME'][0] if 'Earth_TIME' in next_ds.indexes else None
                 
+                if limit_time is not None and 'time' in ds.indexes:
+                    ds = ds.isel(time=(ds.indexes['time'] < limit_time))
+                if limit_earth is not None and 'Earth_TIME' in ds.indexes:
+                    ds = ds.isel(Earth_TIME=(ds.indexes['Earth_TIME'] < limit_earth))
+                    
+            merged_datasets.append(ds)
+            
+        ds_combined = xr.combine_by_coords(merged_datasets, combine_attrs='override')
         return ds_combined
     except Exception as e:
-        print(f"combine_first failed: {e}. Returning unmerged dataset list.")
+        print(f"combine_by_coords failed on clipped datasets: {e}. Returning unmerged dataset list.")
         return datasets
 
 def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: str, run_time: str = "0000", cache_dir: str = "enlil_cache", vars_to_keep: list = None):
