@@ -73,13 +73,45 @@ def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache
     while current_request_date <= end:
         nc_files = fetch_enlil_data_for_date(current_request_date, run_time, cache_dir)
         
-        if nc_files:
-            for f in nc_files:
-                if str(f) not in [str(af) for af in all_nc_files]:
-                    all_nc_files.append(f)
-                    
-        # Always fetch adjacent days natively to capture emerging CMEs
-        current_request_date += timedelta(days=1)
+        if not nc_files:
+            current_request_date += timedelta(days=1)
+            continue
+            
+        for f in nc_files:
+            if str(f) not in [str(af) for af in all_nc_files]:
+                all_nc_files.append(f)
+        
+        try:
+            ds = xr.open_mfdataset(nc_files, engine='netcdf4', decode_timedelta=True)
+            
+            max_ns = None
+            if 'time' in ds.coords or 'time' in ds.data_vars:
+                max_ns = pd.Series(ds.time.values).max()
+            elif 'Earth_TIME' in ds.coords or 'Earth_TIME' in ds.data_vars:
+                max_ns = pd.Series(ds.Earth_TIME.values).max()
+                
+            if max_ns is not None:
+                ref_date_str = ds.attrs.get('REFDATE_CAL', current_request_date.strftime('%Y-%m-%dT00:00:00'))
+                ref_date = pd.to_datetime(ref_date_str)
+                
+                max_time_dt = ref_date + max_ns
+                max_date = datetime(max_time_dt.year, max_time_dt.month, max_time_dt.day)
+                
+                if max_date >= end:
+                    ds.close()
+                    break
+                else:
+                    if max_date > current_request_date:
+                        current_request_date = max_date
+                    else:
+                        current_request_date += timedelta(days=1)
+            else:
+                current_request_date += timedelta(days=1)
+                
+            ds.close()
+            
+        except Exception:
+            current_request_date += timedelta(days=1)
             
     return all_nc_files
 
