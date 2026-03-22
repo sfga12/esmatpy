@@ -113,11 +113,14 @@ def load_enlil_dataset(nc_files: list):
     except Exception:
         return [xr.open_dataset(f, engine='netcdf4', decode_timedelta=True) for f in nc_files]
 
-def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: str, run_time: str = "0000", cache_dir: str = "enlil_cache"):
+def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: str, run_time: str = "0000", cache_dir: str = "enlil_cache", vars_to_keep: list = None):
     """
     Downloads data for the given date range, crops it strictly within start_date and end_date,
     and saves it to a single NetCDF (.nc) file.
     """
+    if vars_to_keep is None:
+        vars_to_keep = ['dd13_3d', 'vv13_3d', 'x_coord', 'y_coord', 'z_coord', 'time']
+
     nc_files = get_enlil_data(start_date, end_date, run_time, cache_dir)
     if not nc_files:
         print("No files found for the given dates.")
@@ -156,6 +159,10 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
         return None
         
     ds_cropped = ds.isel(isel_args)
+    
+    if vars_to_keep:
+        existing_vars = [v for v in vars_to_keep if v in ds_cropped.variables]
+        ds_cropped = ds_cropped[existing_vars]
     
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     ds_cropped.to_netcdf(output_path)
