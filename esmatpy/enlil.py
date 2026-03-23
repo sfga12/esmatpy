@@ -153,23 +153,30 @@ def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache
             
     return all_nc_files
 
+# Default Earth-point variables (1D time series, very small)
+EARTH_VARS = [
+    'Earth_TIME', 'Earth_Density', 'Earth_Temperature',
+    'Earth_V1', 'Earth_V2', 'Earth_V3',
+    'Earth_B1', 'Earth_B2', 'Earth_B3',
+    'Earth_DP_CME', 'Earth_BP_POLARITY',
+    'Earth_X1', 'Earth_X2', 'Earth_X3',
+]
+
 def load_enlil_dataset(nc_files: list):
     if not nc_files:
         return None
     
     datasets = []
-    for f in sorted(nc_files):  # Sort to enforce chronological ordering of runs
+    for f in sorted(nc_files):
         try:
             ds = xr.open_dataset(f, engine='netcdf4', decode_timedelta=True)
             ref_date_str = ds.attrs.get('REFDATE_CAL')
             if ref_date_str:
                 ref_date = pd.to_datetime(ref_date_str)
-                # Convert timedeltas to absolute datetimes
                 for t_var in ['time', 'Earth_TIME']:
                     if t_var in ds.variables:
                         ds.coords[t_var] = ref_date + ds[t_var]
                 
-                # Swap index dimensions so xarray can logically merge disparate files
                 dims_to_swap = {}
                 if 'time' in ds.coords and ds.coords['time'].dims == ('t',):
                     dims_to_swap['t'] = 'time'
@@ -204,92 +211,151 @@ def load_enlil_dataset(nc_files: list):
                     
             merged_datasets.append(ds)
             
-        ds_combined = xr.combine_by_coords(merged_datasets, combine_attrs='override', join='outer', data_vars='all')
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ds_combined = xr.combine_by_coords(merged_datasets, combine_attrs='override', join='outer', data_vars='all', compat='override')
         return ds_combined
     except Exception as e:
-        print(f"combine_by_coords failed on clipped datasets: {e}. Returning unmerged dataset list.")
+        print(f"combine_by_coords failed: {e}. Returning unmerged dataset list.")
         return datasets
 
-def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: str, run_time: str = "0000", cache_dir: str = "enlil_cache", vars_to_keep: list = None):
+def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: str,
+                                  run_time: str = "0000", cache_dir: str = "enlil_cache",
+                                  vars_to_keep: list = None):
     """
-    Downloads data for the given date range, crops it strictly within start_date and end_date,
-    and saves it to a single NetCDF (.nc) file.
+    Downloads ENLIL data for the given date range, processes each file individually
+    (keeping only the requested variables and cropping to the date window), then
+    concatenates and saves a single compact NetCDF file.
+
+    This approach never loads full 3D grids into memory simultaneously, making it
+    safe to use in memory-constrained environments like Google Colab.
+
+    Parameters
+    ----------
+    start_date : str  e.g. '2026-01-31'
+    end_date   : str  e.g. '2026-02-07'
+    output_path: str  Path for the output .nc file, e.g. 'output/earth_data.nc'
+    vars_to_keep: list  Variables to retain. Defaults to all Earth_* point variables.
+    
+    Returns
+    -------
+    str  Path to the saved .nc file, or None on failure.
     """
     if vars_to_keep is None:
-        vars_to_keep = ['dd13_3d', 'vv13_3d', 'x_coord', 'y_coord', 'z_coord', 'time']
+        vars_to_keep = EARTH_VARS
 
     nc_files = get_enlil_data(start_date, end_date, run_time, cache_dir)
     if not nc_files:
         print("No files found for the given dates.")
         return None
-        
-    ds = load_enlil_dataset(nc_files)
-    if isinstance(ds, list):
-        print("Could not merge datasets automatically. Cropping is not supported for lists.")
-        return None
 
     start_dt = pd.to_datetime(start_date)
-    # Include up to the exact end of the requested end_date
-    end_dt = pd.to_datetime(end_date) + timedelta(days=1) - pd.Timedelta(seconds=1)
-    
-    start_dt_np = np.datetime64(start_dt)
-    end_dt_np = np.datetime64(end_dt)
-    
-    isel_args = {}
-    
-    for t_var in ['time', 'Earth_TIME']:
-        if t_var in ds.coords or t_var in ds.data_vars:
-            # Check if variable is absolute datetime
-            if np.issubdtype(ds[t_var].dtype, np.datetime64):
-                mask = ((ds[t_var] >= start_dt_np) & (ds[t_var] <= end_dt_np)).values
-                dim_name = t_var if t_var in ds.dims else ds[t_var].dims[0]
-                isel_args[dim_name] = mask
-            else:
-                # Legacy fallback to relative logic
-                ref_date_str = ds.attrs.get('REFDATE_CAL', start_dt.strftime('%Y-%m-%dT00:00:00'))
-                ref_date = pd.to_datetime(ref_date_str)
-                
-                start_td = start_dt - ref_date
-                end_td = end_dt - ref_date
-                
-                # Convert pandas Timedelta to numpy timedelta64[ns]
-                start_np = np.timedelta64(start_td.value, 'ns')
-                end_np = np.timedelta64(end_td.value, 'ns')
-                
-                mask = ((ds[t_var] >= start_np) & (ds[t_var] <= end_np)).values
-                dim_name = t_var if t_var in ds.dims else ds[t_var].dims[0]
-                
-                isel_args[dim_name] = mask
+    end_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
-    if not isel_args:
-        print("Could not determine any time variable to crop data.")
+    slices = []
+    # Find which time dimension names correspond to Earth_TIME and 3D time
+    for f in sorted(nc_files):
+        try:
+            with xr.open_dataset(f, engine='netcdf4', decode_timedelta=True) as ds_raw:
+                ref_date_str = ds_raw.attrs.get('REFDATE_CAL')
+                if not ref_date_str:
+                    continue
+                ref_date = pd.to_datetime(ref_date_str)
+
+                # Only load the requested variables (+ their dimension coords)
+                available = [v for v in vars_to_keep if v in ds_raw.variables]
+                if not available:
+                    continue
+                ds = ds_raw[available].load()
+
+                # Convert all time variables to absolute datetime
+                for t_var in ['time', 'Earth_TIME']:
+                    if t_var in ds.variables:
+                        raw_vals = ds[t_var].values
+                        dtype_str = str(raw_vals.dtype)
+                        if 'timedelta' in dtype_str:
+                            abs_times = (ref_date + pd.to_timedelta(raw_vals)).values.astype('datetime64[ns]')
+                        else:
+                            abs_times = pd.to_datetime(raw_vals).values.astype('datetime64[ns]')
+                        ds[t_var] = xr.DataArray(abs_times, dims=ds[t_var].dims)
+
+                        # Promote to index dimension
+                        if ds[t_var].dims[0] in ds.dims and t_var != ds[t_var].dims[0]:
+                            ds = ds.assign_coords({t_var: (ds[t_var].dims[0], abs_times)})
+                            ds = ds.swap_dims({ds[t_var].dims[0]: t_var})
+
+                # Crop each time axis to [start_dt, end_dt]
+                start_np = np.datetime64(start_dt, 'ns')
+                end_np = np.datetime64(end_dt, 'ns')
+
+                for t_var in ['time', 'Earth_TIME']:
+                    if t_var in ds.indexes:
+                        mask = (ds.indexes[t_var] >= start_np) & (ds.indexes[t_var] <= end_np)
+                        if not mask.any():
+                            continue
+                        ds = ds.isel({t_var: mask})
+
+                ds.attrs['REFDATE_CAL'] = str(ref_date)
+                slices.append(ds)
+
+        except Exception as e:
+            print(f"Warning: Could not process {f}: {e}")
+
+    if not slices:
+        print("No data remained after cropping.")
         return None
-        
-    ds_cropped = ds.isel(isel_args)
-    
-    if vars_to_keep:
-        vars_to_drop = [v for v in ds_cropped.variables if v not in vars_to_keep]
-        ds_cropped = ds_cropped.drop_vars(vars_to_drop)
-    
+
+    # Concatenate slices along Earth_TIME (or time) without overlap
+    def concat_on_dim(dim_name, all_slices):
+        parts = [s for s in all_slices if dim_name in s.indexes]
+        if not parts:
+            return None
+        deduped = []
+        seen_max = None
+        for part in sorted(parts, key=lambda s: s.indexes[dim_name][0]):
+            if seen_max is not None:
+                part = part.isel({dim_name: part.indexes[dim_name] > seen_max})
+            if part.sizes[dim_name] > 0:
+                deduped.append(part)
+                seen_max = part.indexes[dim_name][-1]
+        if not deduped:
+            return None
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return xr.concat(deduped, dim=dim_name, combine_attrs='override')
+
+    combined_earth = concat_on_dim('Earth_TIME', slices)
+    combined_3d    = concat_on_dim('time', slices)
+
+    if combined_earth is None and combined_3d is None:
+        print("Could not combine any data.")
+        return None
+
+    # Merge Earth and 3D components if both exist
+    if combined_earth is not None and combined_3d is not None:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ds_final = xr.merge([combined_earth, combined_3d], combine_attrs='override')
+    else:
+        ds_final = combined_earth if combined_earth is not None else combined_3d
+
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    ds_cropped.to_netcdf(output_path)
-    
-    # Close datasets to release file locks (crucial before deletion)
-    ds_cropped.close()
-    ds.close()
-    
-    # Clean up massive uncropped original files to save disk/cache space
+    ds_final.to_netcdf(output_path)
+    ds_final.close()
+
+    # Clean up raw downloaded files
     for nc_file in nc_files:
         try:
             nc_path = Path(nc_file)
             if nc_path.exists():
                 nc_path.unlink()
-            # Remove the extracted date folder if it became empty
             if nc_path.parent.exists() and nc_path.parent.is_dir() and not any(nc_path.parent.iterdir()):
                 nc_path.parent.rmdir()
-        except Exception as e:
-            pass # Keep silent if deletion fails due to OS locks
+        except Exception:
+            pass
 
-    print(f"Data successfully cropped and saved to {output_path}")
-    print(f"Removed {len(nc_files)} original uncropped cache file(s) to save space.")
+    print(f"Saved cropped dataset to {output_path}")
     return output_path
