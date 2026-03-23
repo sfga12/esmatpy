@@ -86,13 +86,50 @@ def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache
     while current_request_date <= end:
         nc_files = fetch_enlil_data_for_date(current_request_date, run_time, cache_dir)
         
+        jumped = False
         if nc_files:
             for f in nc_files:
                 if str(f) not in [str(af) for af in all_nc_files]:
                     all_nc_files.append(f)
                     
-        # Always fetch adjacent days natively to capture emerging CMEs! Without this, you miss the storms.
-        current_request_date += timedelta(days=1)
+            try:
+                with xr.open_dataset(nc_files[0], engine='netcdf4', decode_timedelta=True) as ds:
+                    ref_date_str = ds.attrs.get('REFDATE_CAL')
+                    if ref_date_str:
+                        ref_date = pd.to_datetime(ref_date_str)
+                        max_time = None
+                        
+                        for t_var in ['time', 'Earth_TIME']:
+                            if t_var in ds.variables:
+                                max_val = ds[t_var].max().values
+                                t = None
+                                
+                                try:
+                                    if hasattr(max_val, 'dtype'):
+                                        dtype_str = str(max_val.dtype)
+                                    else:
+                                        dtype_str = type(max_val).__name__
+                                        
+                                    if 'datetime64' in dtype_str:
+                                        t = pd.to_datetime(max_val)
+                                    elif 'timedelta' in dtype_str:
+                                        t = ref_date + pd.to_timedelta(max_val)
+                                except Exception:
+                                    pass
+                                    
+                                if t is not None and (max_time is None or t > max_time):
+                                    max_time = t
+                                    
+                        if max_time is not None:
+                            max_date = max_time.to_pydatetime().replace(hour=0, minute=0, second=0, microsecond=0)
+                            if max_date > current_request_date:
+                                current_request_date = max_date
+                                jumped = True
+            except Exception:
+                pass
+                    
+        if not jumped:
+            current_request_date += timedelta(days=1)
             
     return all_nc_files
 
