@@ -9,6 +9,19 @@ from pathlib import Path
 
 BASE_URL = "https://data.ngdc.noaa.gov/earth-science-services/models/space-weather/wsa-enlil"
 
+def _has_cme_on_date(date: datetime) -> bool:
+    """Check (listing only, no download) whether a CME run exists for the given date."""
+    import re
+    date_str = date.strftime("%Y%m%d")
+    dir_url = f"{BASE_URL}/{date.strftime('%Y')}/{date.strftime('%m')}/"
+    try:
+        content = requests.get(dir_url, timeout=10).text
+    except Exception:
+        return False
+    pattern = r'swpc_wsaenlil_(?!bkg)([a-zA-Z]+)_' + date_str + r'_\d{4}\.tar\.gz'
+    return bool(re.search(pattern, content))
+
+
 def fetch_enlil_data_for_date(date: datetime, default_run_time: str = "0000", cache_dir: str = "enlil_cache") -> list:
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
@@ -129,18 +142,19 @@ def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache
                                 if is_bkg:
                                     scan_date = current_request_date + timedelta(days=1)
                                     while scan_date <= min(max_date, end):
-                                        cme_files = fetch_enlil_data_for_date(scan_date, run_time, cache_dir)
-                                        if cme_files and 'bkg' not in str(cme_files[0]).lower():
-                                            # Found a CME run inside the BKG window — replace the BKG entry
-                                            print(f"Newer CME run found on {scan_date.strftime('%Y-%m-%d')}. Replacing BKG run.")
-                                            for old in nc_files:
-                                                if str(old) in [str(af) for af in all_nc_files]:
-                                                    all_nc_files.remove(old)
-                                            for f in cme_files:
-                                                if str(f) not in [str(af) for af in all_nc_files]:
-                                                    all_nc_files.append(f)
-                                            nc_files = cme_files
-                                            break
+                                        # Check listing only first — no download needed to confirm CME existence
+                                        if _has_cme_on_date(scan_date):
+                                            cme_files = fetch_enlil_data_for_date(scan_date, run_time, cache_dir)
+                                            if cme_files:
+                                                print(f"Newer CME run found on {scan_date.strftime('%Y-%m-%d')}. Replacing BKG run.")
+                                                for old in nc_files:
+                                                    if str(old) in [str(af) for af in all_nc_files]:
+                                                        all_nc_files.remove(old)
+                                                for f in cme_files:
+                                                    if str(f) not in [str(af) for af in all_nc_files]:
+                                                        all_nc_files.append(f)
+                                                nc_files = cme_files
+                                                break
                                         scan_date += timedelta(days=1)
 
                                 current_request_date = max_date
