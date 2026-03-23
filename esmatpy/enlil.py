@@ -346,14 +346,15 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
     ds_final.to_netcdf(output_path)
     ds_final.close()
 
-    # Clean up raw downloaded files
+    # Clean up raw downloaded files and their extracted folders
+    import shutil
+    cleaned = set()
     for nc_file in nc_files:
         try:
-            nc_path = Path(nc_file)
-            if nc_path.exists():
-                nc_path.unlink()
-            if nc_path.parent.exists() and nc_path.parent.is_dir() and not any(nc_path.parent.iterdir()):
-                nc_path.parent.rmdir()
+            extract_dir = Path(nc_file).parent
+            if extract_dir not in cleaned and extract_dir.exists():
+                shutil.rmtree(extract_dir, ignore_errors=True)
+                cleaned.add(extract_dir)
         except Exception:
             pass
 
