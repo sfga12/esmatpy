@@ -123,6 +123,26 @@ def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache
                         if max_time is not None:
                             max_date = max_time.to_pydatetime().replace(hour=0, minute=0, second=0, microsecond=0)
                             if max_date > current_request_date:
+                                # If we downloaded a BKG run, scan intermediate days for a newer CME run.
+                                # A CME run published mid-window is more accurate and should replace the BKG file.
+                                is_bkg = 'bkg' in str(nc_files[0]).lower()
+                                if is_bkg:
+                                    scan_date = current_request_date + timedelta(days=1)
+                                    while scan_date <= min(max_date, end):
+                                        cme_files = fetch_enlil_data_for_date(scan_date, run_time, cache_dir)
+                                        if cme_files and 'bkg' not in str(cme_files[0]).lower():
+                                            # Found a CME run inside the BKG window — replace the BKG entry
+                                            print(f"Newer CME run found on {scan_date.strftime('%Y-%m-%d')}. Replacing BKG run.")
+                                            for old in nc_files:
+                                                if str(old) in [str(af) for af in all_nc_files]:
+                                                    all_nc_files.remove(old)
+                                            for f in cme_files:
+                                                if str(f) not in [str(af) for af in all_nc_files]:
+                                                    all_nc_files.append(f)
+                                            nc_files = cme_files
+                                            break
+                                        scan_date += timedelta(days=1)
+
                                 current_request_date = max_date
                                 jumped = True
             except Exception:
