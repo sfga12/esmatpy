@@ -313,16 +313,27 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                             ds = ds.assign_coords({t_var: (ds[t_var].dims[0], abs_times)})
                             ds = ds.swap_dims({ds[t_var].dims[0]: t_var})
 
-                # Crop each time axis to [start_dt, end_dt]
+                # Crop each time axis to [start_dt, end_dt].
+                # If a time dim has NO valid data → shrink to 0 (skip writing it)
+                # so NaT values never end up in the output file.
                 start_np = np.datetime64(start_dt, 'ns')
-                end_np = np.datetime64(end_dt, 'ns')
+                end_np   = np.datetime64(end_dt,   'ns')
 
+                all_empty = True
                 for t_var in ['time', 'Earth_TIME']:
-                    if t_var in ds.indexes:
-                        mask = (ds.indexes[t_var] >= start_np) & (ds.indexes[t_var] <= end_np)
-                        if not mask.any():
-                            continue
+                    if t_var not in ds.indexes:
+                        continue
+                    idx = ds.indexes[t_var]
+                    mask = (~np.isnat(idx)) & (idx >= start_np) & (idx <= end_np)
+                    if mask.any():
                         ds = ds.isel({t_var: mask})
+                        all_empty = False
+                    else:
+                        # Drop this dim entirely to avoid writing garbage values
+                        ds = ds.isel({t_var: slice(0, 0)})
+
+                if all_empty:
+                    continue
 
                 ds.attrs['REFDATE_CAL'] = str(ref_date)
                 slices.append(ds)
@@ -377,21 +388,23 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
             if all(s.sizes.get(d, 0) == 0 for d in unlimited_dims if d in s.indexes):
                 continue
 
-            _EPOCH = np.datetime64(0, 'ns')
+            # Store datetime64 as float64 seconds since 1970-01-01 (CF standard).
+            # xarray decode_times=True will convert this back to datetime64 correctly.
+            _EPOCH_S = np.datetime64('1970-01-01', 's')
             def _to_nc_values(arr):
                 if np.issubdtype(arr.dtype, np.datetime64):
-                    return (arr.astype('datetime64[ns]') - _EPOCH).astype(np.int64)
+                    return (arr.astype('datetime64[s]') - _EPOCH_S).astype(np.float64)
                 return arr
 
             def _nc_dtype(arr):
                 if np.issubdtype(arr.dtype, np.datetime64):
-                    return 'i8'
+                    return 'f8'
                 return arr.dtype
 
             def _nc_attrs(var):
                 attrs = {k: var.attrs[k] for k in var.attrs}
                 if np.issubdtype(var.dtype, np.datetime64):
-                    attrs['units'] = 'nanoseconds since 1970-01-01'
+                    attrs['units']    = 'seconds since 1970-01-01'
                     attrs['calendar'] = 'proleptic_gregorian'
                 return attrs
 
