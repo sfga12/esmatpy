@@ -367,21 +367,36 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
             if all(s.sizes.get(d, 0) == 0 for d in unlimited_dims if d in s.indexes):
                 continue
 
+            _EPOCH = np.datetime64(0, 'ns')
+            def _to_nc_values(arr):
+                if np.issubdtype(arr.dtype, np.datetime64):
+                    return (arr.astype('datetime64[ns]') - _EPOCH).astype(np.int64)
+                return arr
+
+            def _nc_dtype(arr):
+                if np.issubdtype(arr.dtype, np.datetime64):
+                    return 'i8'
+                return arr.dtype
+
+            def _nc_attrs(var):
+                attrs = {k: var.attrs[k] for k in var.attrs}
+                if np.issubdtype(var.dtype, np.datetime64):
+                    attrs['units'] = 'nanoseconds since 1970-01-01'
+                    attrs['calendar'] = 'proleptic_gregorian'
+                return attrs
+
             # --- First slice: create dimensions and variables
             if not written:
-                for dim, size in s.dims.items():
-                    is_unlim = dim in unlimited_dims or dim in [s.indexes[d].dims[0]
-                               if hasattr(s.indexes[d], 'dims') else d
-                               for d in unlimited_dims if d in s.indexes]
+                for dim, size in s.sizes.items():
                     if dim not in out.dimensions:
                         out.createDimension(dim, None if dim in unlimited_dims else size)
 
                 for vname, var in s.variables.items():
                     if vname not in out.variables:
-                        dtype = var.dtype
-                        v = out.createVariable(vname, dtype, var.dims,
+                        nc_dt = _nc_dtype(var.values)
+                        v = out.createVariable(vname, nc_dt, var.dims,
                                                zlib=True, complevel=4)
-                        v.setncatts({k: var.attrs[k] for k in var.attrs})
+                        v.setncatts(_nc_attrs(var))
 
                 # Global attrs
                 out.setncatts({k: s.attrs[k] for k in s.attrs})
@@ -390,10 +405,11 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
             # --- Append data along unlimited dims
             for vname, var in s.variables.items():
                 if vname not in out.variables:
-                    # variable appeared in a later slice but not the first — skip
                     continue
                 out_var = out.variables[vname]
-                # Find which dim is unlimited and its current length
+                data = _to_nc_values(var.values)
+
+                # Find which dim is unlimited
                 unlim_ax = None
                 for ax, dim in enumerate(var.dims):
                     if dim in unlimited_dims:
@@ -402,15 +418,15 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                         break
 
                 if unlim_ax is None:
-                    # Non-time variable: write once on first pass
+                    # Non-time variable: write once
                     if out_var.size == 0:
-                        out_var[:] = var.values
+                        out_var[:] = data
                 else:
                     cur_len = out.dimensions[unlim_dim].size
-                    new_len = cur_len + var.shape[unlim_ax]
+                    new_len = cur_len + data.shape[unlim_ax]
                     slc = [slice(None)] * len(var.dims)
                     slc[unlim_ax] = slice(cur_len, new_len)
-                    out_var[tuple(slc)] = var.values
+                    out_var[tuple(slc)] = data
 
         if not written:
             print("Could not write any data.")
