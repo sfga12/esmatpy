@@ -341,27 +341,41 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
             t_dim_name  = slices_t[0]['time'].dims[0]        # 't'
             et_dim_name = (slices_et[0]['Earth_TIME'].dims[0]
                            if slices_et else 'earth_t')       # 'earth_t'
-            # Drop earth_t-based vars from 3D slices before concat along 't'
-            def _keep_t(s):
+            def _prep_t(s):
+                # Drop earth_t-based vars from 3D slices
                 drop = [v for v in s.data_vars if et_dim_name in s[v].dims]
-                return s.drop_vars(drop, errors='ignore')
-            ds_t = xr.concat([_keep_t(s) for s in slices_t],
-                             dim=t_dim_name, combine_attrs='override')
+                s = s.drop_vars(drop, errors='ignore')
+                # Promote spatial vars to coords so xr.concat doesn't stack them
+                spatial = [v for v in s.data_vars
+                           if len(s[v].dims) == 1
+                           and s[v].dims[0] not in (t_dim_name, et_dim_name)]
+                return s.set_coords(spatial)
+
+            ds_t = xr.concat([_prep_t(s) for s in slices_t],
+                             dim=t_dim_name, combine_attrs='override',
+                             join='override')
             parts.append(ds_t)
+
         if slices_et:
             et_dim_name = slices_et[0]['Earth_TIME'].dims[0]  # 'earth_t'
             t_dim_name2 = (slices_t[0]['time'].dims[0]
                            if slices_t else 't')               # 't'
-            # Drop t-based vars from Earth slices before concat along 'earth_t'
-            def _keep_et(s):
+            def _prep_et(s):
+                # Drop t-based vars from Earth slices
                 drop = [v for v in s.data_vars if t_dim_name2 in s[v].dims]
-                return s.drop_vars(drop, errors='ignore')
-            ds_et = xr.concat([_keep_et(s) for s in slices_et],
-                              dim=et_dim_name, combine_attrs='override')
+                s = s.drop_vars(drop, errors='ignore')
+                spatial = [v for v in s.data_vars
+                           if len(s[v].dims) == 1
+                           and s[v].dims[0] not in (t_dim_name2, et_dim_name)]
+                return s.set_coords(spatial)
+
+            ds_et = xr.concat([_prep_et(s) for s in slices_et],
+                              dim=et_dim_name, combine_attrs='override',
+                              join='override')
             parts.append(ds_et)
 
         if len(parts) == 2:
-            ds_final = xr.merge(parts, combine_attrs='override')
+            ds_final = xr.merge(parts, combine_attrs='override', join='override')
         else:
             ds_final = parts[0]
 
