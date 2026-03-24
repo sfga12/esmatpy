@@ -238,23 +238,18 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                                   run_time: str = "0000", cache_dir: str = "enlil_cache",
                                   vars_to_keep: list = None):
     """
-    Downloads ENLIL data for the given date range, processes each file individually
-    (keeping only the requested variables and cropping to the date window), then
-    concatenates and saves a single compact NetCDF file.
+    Downloads ENLIL data for the given date range, crops to the window, and saves
+    a single NetCDF file.
 
-    This approach never loads full 3D grids into memory simultaneously, making it
-    safe to use in memory-constrained environments like Google Colab.
+    Dimension names are preserved as-is from the source files:
+      - 3D time  → dim 't',       variable 'time'  (timedelta64 relative to REFDATE_CAL)
+      - Earth ts → dim 'earth_t', variable 'Earth_TIME' (timedelta64 relative to REFDATE_CAL)
 
-    Parameters
-    ----------
-    start_date : str  e.g. '2026-01-31'
-    end_date   : str  e.g. '2026-02-07'
-    output_path: str  Path for the output .nc file, e.g. 'output/earth_data.nc'
-    vars_to_keep: list  Variables to retain. Defaults to all Earth_* point variables.
-    
-    Returns
-    -------
-    str  Path to the saved .nc file, or None on failure.
+    Visualise with:
+        ds = xr.open_dataset(output_path)
+        ref = pd.to_datetime(ds.attrs['REFDATE_CAL'])
+        t_abs = ref + pd.to_timedelta(ds['time'].values)   # absolute datetimes
+        raw = ds['dd13_3d'].isel(t=time_idx).values
     """
     if vars_to_keep is None:
         vars_to_keep = EARTH_VARS
@@ -264,224 +259,107 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
         print("No files found for the given dates.")
         return None
 
-    start_dt = pd.to_datetime(start_date)
-    end_dt = pd.to_datetime(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    start_dt = pd.Timestamp(start_date)
+    end_dt   = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
-    slices = []
-    # Find which time dimension names correspond to Earth_TIME and 3D time
+    slices_t  = []   # pieces along 't'       (3-D time)
+    slices_et = []   # pieces along 'earth_t'  (Earth point time)
+    global_attrs = {}
+    seen_t_max  = None
+    seen_et_max = None
+
     for f in sorted(nc_files):
         try:
             with xr.open_dataset(f, engine='netcdf4', decode_timedelta=True) as ds_raw:
                 ref_date_str = ds_raw.attrs.get('REFDATE_CAL')
                 if not ref_date_str:
                     continue
-                ref_date = pd.to_datetime(ref_date_str)
+                ref_date = pd.Timestamp(ref_date_str)
+                if not global_attrs:
+                    global_attrs = dict(ds_raw.attrs)
 
-                # Only load the requested variables (+ their dimension coords)
+                # --- Select requested variables ---
                 available = [v for v in vars_to_keep if v in ds_raw.variables]
                 if not available:
                     continue
-                # Always include time variables so that axis conversion and
-                # cropping work regardless of what vars_to_keep contains.
-                time_vars = [v for v in ['time', 'Earth_TIME']
-                             if v in ds_raw.variables and v not in available]
-                selected_dims = set()
+
+                # Always load time variables for cropping (original timedelta form)
+                time_extra = [v for v in ['time', 'Earth_TIME']
+                              if v in ds_raw.variables and v not in available]
+
+                # Auto-include 1-D spatial coordinate arrays (x_coord, z_coord, …)
+                selected_dims: set = set()
                 for v in available:
                     selected_dims.update(ds_raw[v].dims)
-                coord_vars = [
+                coord_extra = [
                     v for v in ds_raw.variables
-                    if v not in available and v not in time_vars
+                    if v not in available and v not in time_extra
+                    and v not in ('time', 'Earth_TIME')
                     and len(ds_raw[v].dims) == 1
                     and ds_raw[v].dims[0] in selected_dims
-                    and v not in ('time', 'Earth_TIME')
                 ]
-                ds = ds_raw[available + time_vars + coord_vars].load()
 
-                # Convert all time variables to absolute datetime
-                for t_var in ['time', 'Earth_TIME']:
-                    if t_var in ds.variables:
-                        raw_vals = ds[t_var].values
-                        dtype_str = str(raw_vals.dtype)
-                        if 'timedelta' in dtype_str:
-                            abs_times = (ref_date + pd.to_timedelta(raw_vals)).values.astype('datetime64[ns]')
-                        else:
-                            abs_times = pd.to_datetime(raw_vals).values.astype('datetime64[ns]')
-                        ds[t_var] = xr.DataArray(abs_times, dims=ds[t_var].dims)
+                ds = ds_raw[available + time_extra + coord_extra].load()
 
-                        # Promote to index dimension.
-                        # Case 1: variable is on a different dim (e.g. 'time' var on 't' dim) → swap
-                        if ds[t_var].dims[0] in ds.dims and t_var != ds[t_var].dims[0]:
-                            ds = ds.assign_coords({t_var: (ds[t_var].dims[0], abs_times)})
-                            ds = ds.swap_dims({ds[t_var].dims[0]: t_var})
-                        # Case 2: variable IS the dim (e.g. 'time' var on 'time' dim) → assign_coords
-                        # Without this, ds.indexes won't contain 'time' and the crop is skipped.
-                        elif ds[t_var].dims[0] == t_var and t_var in ds.dims:
-                            ds = ds.assign_coords({t_var: abs_times})
+                # --- Crop 3-D time (dim 't') ---
+                if 'time' in ds.variables:
+                    t_dim  = ds['time'].dims[0]          # usually 't'
+                    t_abs  = ref_date + pd.to_timedelta(ds['time'].values)
+                    mask_t = (t_abs >= start_dt) & (t_abs <= end_dt)
+                    if seen_t_max is not None:
+                        mask_t &= (t_abs > seen_t_max)
+                    if mask_t.any():
+                        s_t = ds.isel({t_dim: mask_t})
+                        seen_t_max = t_abs[mask_t][-1]
+                        slices_t.append(s_t)
 
-                # Crop each time axis to [start_dt, end_dt].
-                start_np = np.datetime64(start_dt, 'ns')
-                end_np   = np.datetime64(end_dt,   'ns')
-
-                all_empty = True
-                for t_var in ['time', 'Earth_TIME']:
-                    if t_var not in ds.indexes:
-                        continue
-                    idx = ds.indexes[t_var]
-                    mask = (~np.isnat(idx)) & (idx >= start_np) & (idx <= end_np)
-                    if mask.any():
-                        ds = ds.isel({t_var: mask})
-                        all_empty = False
-                    else:
-                        # Drop this dim entirely to avoid writing garbage values
-                        ds = ds.isel({t_var: slice(0, 0)})
-
-                if all_empty:
-                    continue
-
-                _min_valid = np.datetime64('2000-01-01', 'ns')
-                has_plausible_time = False
-                for t_var in ['time', 'Earth_TIME']:
-                    if t_var in ds.indexes and ds.sizes.get(t_var, 0) > 0:
-                        if ds.indexes[t_var].max() > _min_valid:
-                            has_plausible_time = True
-                            break
-                if not has_plausible_time:
-                    continue
-
-                ds.attrs['REFDATE_CAL'] = str(ref_date)
-                slices.append(ds)
+                # --- Crop Earth_TIME (dim 'earth_t') ---
+                if 'Earth_TIME' in ds.variables:
+                    et_dim  = ds['Earth_TIME'].dims[0]   # usually 'earth_t'
+                    et_abs  = ref_date + pd.to_timedelta(ds['Earth_TIME'].values)
+                    mask_et = (et_abs >= start_dt) & (et_abs <= end_dt)
+                    if seen_et_max is not None:
+                        mask_et &= (et_abs > seen_et_max)
+                    if mask_et.any():
+                        s_et = ds.isel({et_dim: mask_et})
+                        seen_et_max = et_abs[mask_et][-1]
+                        slices_et.append(s_et)
 
         except Exception as e:
             print(f"Warning: Could not process {f}: {e}")
 
-    if not slices:
+    if not slices_t and not slices_et:
         print("No data remained after cropping.")
         return None
 
-    # --- Streaming write: append each slice directly to the output file.
-    # This keeps peak RAM to ~1 file at a time rather than holding all
-    # slices in memory simultaneously before the final concat+save.
-    import netCDF4 as nc4
     import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+
+        parts = []
+        if slices_t:
+            t_dim_name = slices_t[0]['time'].dims[0]
+            ds_t = xr.concat(slices_t, dim=t_dim_name, combine_attrs='override')
+            parts.append(ds_t)
+        if slices_et:
+            et_dim_name = slices_et[0]['Earth_TIME'].dims[0]
+            ds_et = xr.concat(slices_et, dim=et_dim_name, combine_attrs='override')
+            parts.append(ds_et)
+
+        if len(parts) == 2:
+            ds_final = xr.merge(parts, combine_attrs='override')
+        else:
+            ds_final = parts[0]
+
+    ds_final.attrs.update(global_attrs)
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    ds_final.to_netcdf(output_path)
+    ds_final.close()
 
-    # Determine which unlimited dims we will use
-    unlimited_dims = set()
-    for s in slices:
-        for dim in ['time', 'Earth_TIME']:
-            if dim in s.indexes:
-                unlimited_dims.add(dim)
-
-    # Sort slices by their first time value on any time dimension
-    def _first_time(s):
-        for dim in ['time', 'Earth_TIME']:
-            if dim in s.indexes:
-                return s.indexes[dim][0]
-        return None
-
-    slices_sorted = sorted(slices, key=_first_time)
-
-    # Track last written timestamp per dim to avoid overlaps
-    seen_max = {dim: None for dim in unlimited_dims}
-
-    written = False
-    with nc4.Dataset(output_path, 'w') as out:
-        for s in slices_sorted:
-            # Deduplicate along each unlimited dim before writing
-            for dim in list(unlimited_dims):
-                if dim not in s.indexes:
-                    continue
-                if seen_max[dim] is not None:
-                    s = s.isel({dim: s.indexes[dim] > seen_max[dim]})
-                if s.sizes.get(dim, 0) == 0:
-                    continue
-                seen_max[dim] = s.indexes[dim][-1]
-
-            if all(s.sizes.get(d, 0) == 0 for d in unlimited_dims if d in s.indexes):
-                continue
-            # Store datetime64 as int64 seconds since 1970-01-01.
-            # Using i8 avoids netCDF4's automatic f8 _FillValue=9.97e36
-            # which causes xarray to overflow during time decoding.
-            # Read back with decode_times=False and convert manually.
-            _EPOCH_S = np.datetime64('1970-01-01', 's')
-            def _to_nc_values(arr):
-                if np.issubdtype(arr.dtype, np.datetime64):
-                    return (arr.astype('datetime64[s]') - _EPOCH_S).astype(np.int64)
-                return arr
-
-            def _nc_dtype(arr):
-                if np.issubdtype(arr.dtype, np.datetime64):
-                    return 'i8'
-                return arr.dtype
-
-            def _nc_attrs(var):
-                attrs = {k: var.attrs[k] for k in var.attrs}
-                if np.issubdtype(var.dtype, np.datetime64):
-                    attrs['units']    = 'seconds since 1970-01-01'
-                    attrs['calendar'] = 'proleptic_gregorian'
-                return attrs
-
-            # --- First slice: create dimensions and variables
-            if not written:
-                for dim, size in s.sizes.items():
-                    if dim not in out.dimensions:
-                        out.createDimension(dim, None if dim in unlimited_dims else size)
-
-                for vname, var in s.variables.items():
-                    if vname not in out.variables:
-                        nc_dt = _nc_dtype(var.values)
-                        is_dt = np.issubdtype(var.dtype, np.datetime64)
-                        v = out.createVariable(vname, nc_dt, var.dims,
-                                               zlib=True, complevel=4,
-                                               fill_value=False if is_dt else None)
-                        v.setncatts(_nc_attrs(var))
-
-                # Global attrs
-                out.setncatts({k: s.attrs[k] for k in s.attrs})
-                written = True
-
-            # --- Append data along unlimited dims
-            for vname, var in s.variables.items():
-                if vname not in out.variables:
-                    continue
-                out_var = out.variables[vname]
-                data = _to_nc_values(var.values)
-
-                # Find which dim is unlimited
-                unlim_ax = None
-                for ax, dim in enumerate(var.dims):
-                    if dim in unlimited_dims:
-                        unlim_ax = ax
-                        unlim_dim = dim
-                        break
-
-                if unlim_ax is None:
-                    # Non-time variable: write once
-                    if out_var.size == 0:
-                        out_var[:] = data
-                else:
-                    cur_len = out.dimensions[unlim_dim].size
-                    new_len = cur_len + data.shape[unlim_ax]
-                    slc = [slice(None)] * len(var.dims)
-                    slc[unlim_ax] = slice(cur_len, new_len)
-                    out_var[tuple(slc)] = data
-
-        if not written:
-            print("Could not write any data.")
-            return None
-
-    # --- Release all slice datasets immediately
-    for s in slices:
-        try:
-            s.close()
-        except Exception:
-            pass
-    del slices
-
-    # Clean up raw downloaded files and their extracted folders
+    # Clean up extracted tar directories
     import shutil
-    cleaned = set()
+    cleaned: set = set()
     for nc_file in nc_files:
         try:
             extract_dir = Path(nc_file).parent
@@ -493,3 +371,4 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
 
     print(f"Saved cropped dataset to {output_path}")
     return output_path
+
