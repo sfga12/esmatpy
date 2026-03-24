@@ -333,6 +333,7 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                 if all_empty:
                     continue
 
+                _min_valid = np.datetime64('2000-01-01', 'ns')
                 has_plausible_time = False
                 for t_var in ['time', 'Earth_TIME']:
                     if t_var in ds.indexes and ds.sizes.get(t_var, 0) > 0:
