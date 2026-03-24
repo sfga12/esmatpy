@@ -308,10 +308,15 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                             abs_times = pd.to_datetime(raw_vals).values.astype('datetime64[ns]')
                         ds[t_var] = xr.DataArray(abs_times, dims=ds[t_var].dims)
 
-                        # Promote to index dimension
+                        # Promote to index dimension.
+                        # Case 1: variable is on a different dim (e.g. 'time' var on 't' dim) → swap
                         if ds[t_var].dims[0] in ds.dims and t_var != ds[t_var].dims[0]:
                             ds = ds.assign_coords({t_var: (ds[t_var].dims[0], abs_times)})
                             ds = ds.swap_dims({ds[t_var].dims[0]: t_var})
+                        # Case 2: variable IS the dim (e.g. 'time' var on 'time' dim) → assign_coords
+                        # Without this, ds.indexes won't contain 'time' and the crop is skipped.
+                        elif ds[t_var].dims[0] == t_var and t_var in ds.dims:
+                            ds = ds.assign_coords({t_var: abs_times})
 
                 # Crop each time axis to [start_dt, end_dt].
                 start_np = np.datetime64(start_dt, 'ns')
