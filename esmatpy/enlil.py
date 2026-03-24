@@ -333,6 +333,15 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                 if all_empty:
                     continue
 
+                has_plausible_time = False
+                for t_var in ['time', 'Earth_TIME']:
+                    if t_var in ds.indexes and ds.sizes.get(t_var, 0) > 0:
+                        if ds.indexes[t_var].max() > _min_valid:
+                            has_plausible_time = True
+                            break
+                if not has_plausible_time:
+                    continue
+
                 ds.attrs['REFDATE_CAL'] = str(ref_date)
                 slices.append(ds)
 
