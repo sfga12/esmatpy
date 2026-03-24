@@ -324,45 +324,105 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
         print("No data remained after cropping.")
         return None
 
-    # Concatenate slices along Earth_TIME (or time) without overlap
-    def concat_on_dim(dim_name, all_slices):
-        parts = [s for s in all_slices if dim_name in s.indexes]
-        if not parts:
-            return None
-        deduped = []
-        seen_max = None
-        for part in sorted(parts, key=lambda s: s.indexes[dim_name][0]):
-            if seen_max is not None:
-                part = part.isel({dim_name: part.indexes[dim_name] > seen_max})
-            if part.sizes[dim_name] > 0:
-                deduped.append(part)
-                seen_max = part.indexes[dim_name][-1]
-        if not deduped:
-            return None
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            return xr.concat(deduped, dim=dim_name, combine_attrs='override')
-
-    combined_earth = concat_on_dim('Earth_TIME', slices)
-    combined_3d    = concat_on_dim('time', slices)
-
-    if combined_earth is None and combined_3d is None:
-        print("Could not combine any data.")
-        return None
-
-    # Merge Earth and 3D components if both exist
-    if combined_earth is not None and combined_3d is not None:
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            ds_final = xr.merge([combined_earth, combined_3d], combine_attrs='override')
-    else:
-        ds_final = combined_earth if combined_earth is not None else combined_3d
+    # --- Streaming write: append each slice directly to the output file.
+    # This keeps peak RAM to ~1 file at a time rather than holding all
+    # slices in memory simultaneously before the final concat+save.
+    import netCDF4 as nc4
+    import warnings
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    ds_final.to_netcdf(output_path)
-    ds_final.close()
+
+    # Determine which unlimited dims we will use
+    unlimited_dims = set()
+    for s in slices:
+        for dim in ['time', 'Earth_TIME']:
+            if dim in s.indexes:
+                unlimited_dims.add(dim)
+
+    # Sort slices by their first time value on any time dimension
+    def _first_time(s):
+        for dim in ['time', 'Earth_TIME']:
+            if dim in s.indexes:
+                return s.indexes[dim][0]
+        return None
+
+    slices_sorted = sorted(slices, key=_first_time)
+
+    # Track last written timestamp per dim to avoid overlaps
+    seen_max = {dim: None for dim in unlimited_dims}
+
+    written = False
+    with nc4.Dataset(output_path, 'w') as out:
+        for s in slices_sorted:
+            # Deduplicate along each unlimited dim before writing
+            for dim in list(unlimited_dims):
+                if dim not in s.indexes:
+                    continue
+                if seen_max[dim] is not None:
+                    s = s.isel({dim: s.indexes[dim] > seen_max[dim]})
+                if s.sizes.get(dim, 0) == 0:
+                    continue
+                seen_max[dim] = s.indexes[dim][-1]
+
+            if all(s.sizes.get(d, 0) == 0 for d in unlimited_dims if d in s.indexes):
+                continue
+
+            # --- First slice: create dimensions and variables
+            if not written:
+                for dim, size in s.dims.items():
+                    is_unlim = dim in unlimited_dims or dim in [s.indexes[d].dims[0]
+                               if hasattr(s.indexes[d], 'dims') else d
+                               for d in unlimited_dims if d in s.indexes]
+                    if dim not in out.dimensions:
+                        out.createDimension(dim, None if dim in unlimited_dims else size)
+
+                for vname, var in s.variables.items():
+                    if vname not in out.variables:
+                        dtype = var.dtype
+                        v = out.createVariable(vname, dtype, var.dims,
+                                               zlib=True, complevel=4)
+                        v.setncatts({k: var.attrs[k] for k in var.attrs})
+
+                # Global attrs
+                out.setncatts({k: s.attrs[k] for k in s.attrs})
+                written = True
+
+            # --- Append data along unlimited dims
+            for vname, var in s.variables.items():
+                if vname not in out.variables:
+                    # variable appeared in a later slice but not the first — skip
+                    continue
+                out_var = out.variables[vname]
+                # Find which dim is unlimited and its current length
+                unlim_ax = None
+                for ax, dim in enumerate(var.dims):
+                    if dim in unlimited_dims:
+                        unlim_ax = ax
+                        unlim_dim = dim
+                        break
+
+                if unlim_ax is None:
+                    # Non-time variable: write once on first pass
+                    if out_var.size == 0:
+                        out_var[:] = var.values
+                else:
+                    cur_len = out.dimensions[unlim_dim].size
+                    new_len = cur_len + var.shape[unlim_ax]
+                    slc = [slice(None)] * len(var.dims)
+                    slc[unlim_ax] = slice(cur_len, new_len)
+                    out_var[tuple(slc)] = var.values
+
+        if not written:
+            print("Could not write any data.")
+            return None
+
+    # --- Release all slice datasets immediately
+    for s in slices:
+        try:
+            s.close()
+        except Exception:
+            pass
+    del slices
 
     # Clean up raw downloaded files and their extracted folders
     import shutil
