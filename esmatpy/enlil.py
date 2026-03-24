@@ -314,8 +314,6 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                             ds = ds.swap_dims({ds[t_var].dims[0]: t_var})
 
                 # Crop each time axis to [start_dt, end_dt].
-                # If a time dim has NO valid data → shrink to 0 (skip writing it)
-                # so NaT values never end up in the output file.
                 start_np = np.datetime64(start_dt, 'ns')
                 end_np   = np.datetime64(end_dt,   'ns')
 
@@ -387,18 +385,19 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
 
             if all(s.sizes.get(d, 0) == 0 for d in unlimited_dims if d in s.indexes):
                 continue
-
-            # Store datetime64 as float64 seconds since 1970-01-01 (CF standard).
-            # xarray decode_times=True will convert this back to datetime64 correctly.
+            # Store datetime64 as int64 seconds since 1970-01-01.
+            # Using i8 avoids netCDF4's automatic f8 _FillValue=9.97e36
+            # which causes xarray to overflow during time decoding.
+            # Read back with decode_times=False and convert manually.
             _EPOCH_S = np.datetime64('1970-01-01', 's')
             def _to_nc_values(arr):
                 if np.issubdtype(arr.dtype, np.datetime64):
-                    return (arr.astype('datetime64[s]') - _EPOCH_S).astype(np.float64)
+                    return (arr.astype('datetime64[s]') - _EPOCH_S).astype(np.int64)
                 return arr
 
             def _nc_dtype(arr):
                 if np.issubdtype(arr.dtype, np.datetime64):
-                    return 'f8'
+                    return 'i8'
                 return arr.dtype
 
             def _nc_attrs(var):
@@ -417,8 +416,10 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                 for vname, var in s.variables.items():
                     if vname not in out.variables:
                         nc_dt = _nc_dtype(var.values)
+                        is_dt = np.issubdtype(var.dtype, np.datetime64)
                         v = out.createVariable(vname, nc_dt, var.dims,
-                                               zlib=True, complevel=4)
+                                               zlib=True, complevel=4,
+                                               fill_value=False if is_dt else None)
                         v.setncatts(_nc_attrs(var))
 
                 # Global attrs
