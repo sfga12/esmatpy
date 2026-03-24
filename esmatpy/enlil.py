@@ -285,7 +285,17 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                 # cropping work regardless of what vars_to_keep contains.
                 time_vars = [v for v in ['time', 'Earth_TIME']
                              if v in ds_raw.variables and v not in available]
-                ds = ds_raw[available + time_vars].load()
+                selected_dims = set()
+                for v in available:
+                    selected_dims.update(ds_raw[v].dims)
+                coord_vars = [
+                    v for v in ds_raw.variables
+                    if v not in available and v not in time_vars
+                    and len(ds_raw[v].dims) == 1
+                    and ds_raw[v].dims[0] in selected_dims
+                    and v not in ('time', 'Earth_TIME')
+                ]
+                ds = ds_raw[available + time_vars + coord_vars].load()
 
                 # Convert all time variables to absolute datetime
                 for t_var in ['time', 'Earth_TIME']:
