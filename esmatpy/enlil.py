@@ -50,8 +50,8 @@ def fetch_available_runs(start_date: datetime, end_date: datetime) -> list:
                     "time": time_str,
                     "filename": filename,
                     "url": f"{url}{filename}",
-                    "valid_start": pd.Timestamp(run_start),
-                    "valid_end": pd.Timestamp(run_end) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+                    "valid_start": pd.Timestamp(run_start).normalize(),
+                    "valid_end": pd.Timestamp(run_end).normalize() + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
                 })
     return runs
 
