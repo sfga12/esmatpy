@@ -57,7 +57,7 @@ def fetch_available_runs(start_date: datetime, end_date: datetime) -> list:
                 })
     return runs
 
-def get_authoritative_timeline(start_date: datetime, end_date: datetime, runs: list) -> list:
+def get_authoritative_timeline(start_date: datetime, end_date: datetime, runs: list, mode: str = "hybrid") -> list:
     """Build non-overlapping intervals prioritizing CME > BKG, then newest."""
     target_start = pd.Timestamp(start_date)
     target_end = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
@@ -69,6 +69,12 @@ def get_authoritative_timeline(start_date: datetime, end_date: datetime, runs: l
     while curr_time <= end_time:
         # exact chronological overlap
         covering_runs = [r for r in runs if pd.Timestamp(r["run_start"]) <= curr_time <= pd.Timestamp(r["run_end"])]
+        
+        if mode == "cme":
+            covering_runs = [r for r in covering_runs if r["mode"] == "cme"]
+        elif mode == "bkg":
+            covering_runs = [r for r in covering_runs if r["mode"] == "bkg"]
+            
         if not covering_runs:
             hourly_mapping.append((curr_time, None))
         else:
@@ -156,13 +162,13 @@ def __download_extract_run(run: dict, cache_path: Path) -> list:
         return nc_files
     return []
 
-def get_enlil_data_intervals(start_date: str, end_date: str, cache_dir: str = "enlil_cache") -> list:
+def get_enlil_data_intervals(start_date: str, end_date: str, cache_dir: str = "enlil_cache", mode: str = "hybrid") -> list:
     """Returns a list of dicts: {'nc_files': [...], 'start': ..., 'end': ...}"""
     start = datetime.strptime(start_date, "%Y-%m-%d")
     end = datetime.strptime(end_date, "%Y-%m-%d")
     
     runs = fetch_available_runs(start, end)
-    intervals = get_authoritative_timeline(start, end, runs)
+    intervals = get_authoritative_timeline(start, end, runs, mode)
     
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
@@ -248,10 +254,13 @@ def load_enlil_dataset(nc_files: list):
 
 def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: str,
                                   run_time: str = "0000", cache_dir: str = "enlil_cache",
-                                  vars_to_keep: list = None):
+                                  vars_to_keep: list = None, mode: str = "hybrid"):
     """
     Downloads ENLIL data for the given date range, crops to the window, and saves
     a single NetCDF file.
+
+    Args:
+        mode: 'hybrid' (CME prioritized, BKG fallback), 'cme' (strict CME), or 'bkg' (strict BKG)
 
     Dimension names are preserved as-is from the source files:
       - 3D time  → dim 't',       variable 'time'  (timedelta64 relative to REFDATE_CAL)
