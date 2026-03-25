@@ -315,6 +315,15 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                 ]
 
                 ds = ds_raw[available + time_extra + coord_extra].load()
+                
+                # Make time and Earth_TIME proper indexed dimensions
+                dims_to_swap = {}
+                if 'time' in ds.coords and ds.coords['time'].dims == ('t',):
+                    dims_to_swap['t'] = 'time'
+                if 'Earth_TIME' in ds.coords and ds.coords['Earth_TIME'].dims == ('earth_t',):
+                    dims_to_swap['earth_t'] = 'Earth_TIME'
+                if dims_to_swap:
+                    ds = ds.swap_dims(dims_to_swap)
 
                 # --- Crop 3-D time (dim 't') ---
                 if 'time' in ds.variables:
@@ -351,9 +360,9 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
 
         parts = []
         if slices_t:
-            t_dim_name  = slices_t[0]['time'].dims[0]        # 't'
+            t_dim_name  = slices_t[0]['time'].dims[0]        # 'time'
             et_dim_name = (slices_et[0]['Earth_TIME'].dims[0]
-                           if slices_et else 'earth_t')       # 'earth_t'
+                           if slices_et else 'Earth_TIME')       # 'Earth_TIME'
             def _prep_t(s):
                 # Drop earth_t-based vars from 3D slices
                 drop = [v for v in s.data_vars if et_dim_name in s[v].dims]
@@ -370,9 +379,9 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
             parts.append(ds_t)
 
         if slices_et:
-            et_dim_name = slices_et[0]['Earth_TIME'].dims[0]  # 'earth_t'
+            et_dim_name = slices_et[0]['Earth_TIME'].dims[0]  # 'Earth_TIME'
             t_dim_name2 = (slices_t[0]['time'].dims[0]
-                           if slices_t else 't')               # 't'
+                           if slices_t else 'time')               # 'time'
             def _prep_et(s):
                 # Drop t-based vars from Earth slices
                 drop = [v for v in s.data_vars if t_dim_name2 in s[v].dims]
