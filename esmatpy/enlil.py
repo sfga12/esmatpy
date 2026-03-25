@@ -60,47 +60,48 @@ def get_authoritative_timeline(start_date: datetime, end_date: datetime, runs: l
     target_start = pd.Timestamp(start_date)
     target_end = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
     
-    curr_day = target_start.normalize()
-    end_day = target_end.normalize()
+    curr_time = target_start.normalize()
+    end_time = target_end
     
-    daily_mapping = []
-    while curr_day <= end_day:
-        covering_runs = [r for r in runs if r["valid_start"] <= curr_day and r["valid_end"] >= curr_day]
+    hourly_mapping = []
+    while curr_time <= end_time:
+        # exact chronological overlap
+        covering_runs = [r for r in runs if pd.Timestamp(r["run_start"]) <= curr_time <= (pd.Timestamp(r["run_end"])+pd.Timedelta(days=1))]
         if not covering_runs:
-            daily_mapping.append((curr_day, None))
+            hourly_mapping.append((curr_time, None))
         else:
             covering_runs.sort(key=lambda x: (
                 1 if x["mode"] == "cme" else 0,
                 x["date"],
                 x["time"]
             ), reverse=True)
-            daily_mapping.append((curr_day, covering_runs[0]))
-        curr_day += pd.Timedelta(days=1)
+            hourly_mapping.append((curr_time, covering_runs[0]))
+        curr_time += pd.Timedelta(hours=1)
         
     intervals = []
-    if not daily_mapping: return intervals
+    if not hourly_mapping: return intervals
         
-    curr_run = daily_mapping[0][1]
-    int_start = daily_mapping[0][0]
+    curr_run = hourly_mapping[0][1]
+    int_start = hourly_mapping[0][0]
     
-    for i in range(1, len(daily_mapping)):
-        day, run = daily_mapping[i]
+    for i in range(1, len(hourly_mapping)):
+        t_time, run = hourly_mapping[i]
         if run != curr_run:
             if curr_run is not None:
                 intervals.append({
                     "run": curr_run,
                     "interval_start": int_start,
-                    "interval_end": day - pd.Timedelta(seconds=1)
+                    "interval_end": t_time - pd.Timedelta(seconds=1)
                 })
             curr_run = run
-            int_start = day
+            int_start = t_time
             
     if curr_run is not None:
-        last_day = daily_mapping[-1][0]
+        last_time = hourly_mapping[-1][0]
         intervals.append({
             "run": curr_run,
             "interval_start": int_start,
-            "interval_end": last_day + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            "interval_end": last_time + pd.Timedelta(hours=1) - pd.Timedelta(seconds=1)
         })
         
     for interval in intervals:
