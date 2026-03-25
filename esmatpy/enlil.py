@@ -50,6 +50,8 @@ def fetch_available_runs(start_date: datetime, end_date: datetime) -> list:
                     "time": time_str,
                     "filename": filename,
                     "url": f"{url}{filename}",
+                    "run_start": run_start,
+                    "run_end": run_end,
                     "valid_start": pd.Timestamp(run_start).normalize(),
                     "valid_end": pd.Timestamp(run_end).normalize() + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
                 })
@@ -66,7 +68,7 @@ def get_authoritative_timeline(start_date: datetime, end_date: datetime, runs: l
     hourly_mapping = []
     while curr_time <= end_time:
         # exact chronological overlap
-        covering_runs = [r for r in runs if pd.Timestamp(r["run_start"]) <= curr_time <= (pd.Timestamp(r["run_end"])+pd.Timedelta(days=1))]
+        covering_runs = [r for r in runs if pd.Timestamp(r["run_start"]) <= curr_time <= pd.Timestamp(r["run_end"])]
         if not covering_runs:
             hourly_mapping.append((curr_time, None))
         else:
