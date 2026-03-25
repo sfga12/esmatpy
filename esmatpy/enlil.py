@@ -275,7 +275,7 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
     if vars_to_keep is None:
         vars_to_keep = EARTH_VARS
 
-    intervals_info = get_enlil_data_intervals(start_date, end_date, cache_dir)
+    intervals_info = get_enlil_data_intervals(start_date, end_date, cache_dir, mode)
     if not intervals_info:
         print("No files found for the given dates.")
         return None
