@@ -291,6 +291,7 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                 ref_date = pd.Timestamp(ref_date_str)
                 if not global_attrs:
                     global_attrs = dict(ds_raw.attrs)
+                    global_ref_date = ref_date
 
                 # --- Select requested variables ---
                 available = [v for v in vars_to_keep if v in ds_raw.variables]
@@ -322,6 +323,8 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                     mask_t = (t_abs >= int_start) & (t_abs <= int_end)
                     if mask_t.any():
                         s_t = ds.isel({t_dim: mask_t})
+                        new_t = t_abs[mask_t] - global_ref_date
+                        s_t = s_t.assign_coords({'time': new_t.to_timedelta64()})
                         slices_t.append(s_t)
 
                 # --- Crop Earth_TIME (dim 'earth_t') ---
@@ -331,6 +334,8 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                     mask_et = (et_abs >= int_start) & (et_abs <= int_end)
                     if mask_et.any():
                         s_et = ds.isel({et_dim: mask_et})
+                        new_et = et_abs[mask_et] - global_ref_date
+                        s_et = s_et.assign_coords({'Earth_TIME': new_et.to_timedelta64()})
                         slices_et.append(s_et)
 
             except Exception as e:
