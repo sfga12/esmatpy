@@ -366,6 +366,8 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
             def _prep_t(s):
                 # Drop earth_t-based vars from 3D slices
                 drop = [v for v in s.data_vars if et_dim_name in s[v].dims]
+                if et_dim_name in s.coords:
+                    drop.append(et_dim_name)
                 s = s.drop_vars(drop, errors='ignore')
                 # Promote spatial vars to coords so xr.concat doesn't stack them
                 spatial = [v for v in s.data_vars
@@ -385,6 +387,8 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
             def _prep_et(s):
                 # Drop t-based vars from Earth slices
                 drop = [v for v in s.data_vars if t_dim_name2 in s[v].dims]
+                if t_dim_name2 in s.coords:
+                    drop.append(t_dim_name2)
                 s = s.drop_vars(drop, errors='ignore')
                 spatial = [v for v in s.data_vars
                            if len(s[v].dims) == 1
