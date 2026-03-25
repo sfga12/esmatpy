@@ -397,7 +397,7 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
             parts.append(ds_et)
 
         if len(parts) == 2:
-            ds_final = xr.merge(parts, combine_attrs='override', join='override')
+            ds_final = xr.merge(parts, combine_attrs='override', join='outer')
         else:
             ds_final = parts[0]
 
