@@ -57,7 +57,7 @@ def fetch_available_runs(start_date: datetime, end_date: datetime) -> list:
                 })
     return runs
 
-def get_authoritative_timeline(start_date: datetime, end_date: datetime, runs: list, mode: str = "hybrid") -> list:
+def get_authoritative_timeline(start_date: datetime, end_date: datetime, runs: list, mode: str = "hybrid", minimize_jumps: bool = False) -> list:
     """Build non-overlapping intervals prioritizing CME > BKG, then newest."""
     target_start = pd.Timestamp(start_date)
     target_end = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
@@ -66,6 +66,8 @@ def get_authoritative_timeline(start_date: datetime, end_date: datetime, runs: l
     end_time = target_end
     
     hourly_mapping = []
+    active_run = None
+    
     while curr_time <= end_time:
         # exact chronological overlap
         covering_runs = [r for r in runs if pd.Timestamp(r["run_start"]) <= curr_time <= pd.Timestamp(r["run_end"])]
@@ -77,13 +79,28 @@ def get_authoritative_timeline(start_date: datetime, end_date: datetime, runs: l
             
         if not covering_runs:
             hourly_mapping.append((curr_time, None))
+            active_run = None
         else:
             covering_runs.sort(key=lambda x: (
                 1 if x["mode"] == "cme" else 0,
                 x["date"],
                 x["time"]
             ), reverse=True)
-            hourly_mapping.append((curr_time, covering_runs[0]))
+            
+            chosen_run = covering_runs[0]
+            
+            if minimize_jumps and active_run is not None:
+                # Is the active run still a valid choice for this hour?
+                if any(r["filename"] == active_run["filename"] for r in covering_runs):
+                    # In hybrid mode, if active is BKG but a CME appears, switch to the CME!
+                    if mode == "hybrid" and active_run["mode"] == "bkg" and chosen_run["mode"] == "cme":
+                        pass # allow jump
+                    else:
+                        chosen_run = active_run # stick to active run
+                        
+            hourly_mapping.append((curr_time, chosen_run))
+            active_run = chosen_run
+            
         curr_time += pd.Timedelta(hours=1)
         
     intervals = []
@@ -162,13 +179,13 @@ def __download_extract_run(run: dict, cache_path: Path) -> list:
         return nc_files
     return []
 
-def get_enlil_data_intervals(start_date: str, end_date: str, cache_dir: str = "enlil_cache", mode: str = "hybrid") -> list:
+def get_enlil_data_intervals(start_date: str, end_date: str, cache_dir: str = "enlil_cache", mode: str = "hybrid", minimize_jumps: bool = False) -> list:
     """Returns a list of dicts: {'nc_files': [...], 'start': ..., 'end': ...}"""
     start = datetime.strptime(start_date, "%Y-%m-%d")
     end = datetime.strptime(end_date, "%Y-%m-%d")
     
     runs = fetch_available_runs(start, end)
-    intervals = get_authoritative_timeline(start, end, runs, mode)
+    intervals = get_authoritative_timeline(start, end, runs, mode, minimize_jumps)
     
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
@@ -254,13 +271,16 @@ def load_enlil_dataset(nc_files: list):
 
 def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: str,
                                   run_time: str = "0000", cache_dir: str = "enlil_cache",
-                                  vars_to_keep: list = None, mode: str = "hybrid"):
+                                  vars_to_keep: list = None, mode: str = "hybrid",
+                                  minimize_jumps: bool = False):
     """
     Downloads ENLIL data for the given date range, crops to the window, and saves
     a single NetCDF file.
 
     Args:
         mode: 'hybrid' (CME prioritized, BKG fallback), 'cme' (strict CME), or 'bkg' (strict BKG)
+        minimize_jumps: If True, sticks to the current simulation continuously for as long as physically possible before switching.
+
 
     Dimension names are preserved as-is from the source files:
       - 3D time  → dim 't',       variable 'time'  (timedelta64 relative to REFDATE_CAL)
@@ -275,7 +295,7 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
     if vars_to_keep is None:
         vars_to_keep = EARTH_VARS
 
-    intervals_info = get_enlil_data_intervals(start_date, end_date, cache_dir, mode)
+    intervals_info = get_enlil_data_intervals(start_date, end_date, cache_dir, mode, minimize_jumps)
     if not intervals_info:
         print("No files found for the given dates.")
         return None
