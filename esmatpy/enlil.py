@@ -9,59 +9,115 @@ from pathlib import Path
 
 BASE_URL = "https://data.ngdc.noaa.gov/earth-science-services/models/space-weather/wsa-enlil"
 
-def _has_cme_on_date(date: datetime) -> bool:
-    """Check (listing only, no download) whether a CME run exists for the given date."""
-    import re
-    date_str = date.strftime("%Y%m%d")
-    dir_url = f"{BASE_URL}/{date.strftime('%Y')}/{date.strftime('%m')}/"
-    try:
-        content = requests.get(dir_url, timeout=10).text
-    except Exception:
-        return False
-    pattern = r'swpc_wsaenlil_(?!bkg)([a-zA-Z]+)_' + date_str + r'_\d{4}\.tar\.gz'
-    return bool(re.search(pattern, content))
-
-
-def fetch_enlil_data_for_date(date: datetime, default_run_time: str = "0000", cache_dir: str = "enlil_cache") -> list:
-    cache_path = Path(cache_dir)
-    cache_path.mkdir(parents=True, exist_ok=True)
+def fetch_available_runs(start_date: datetime, end_date: datetime) -> list:
+    """Finds all available runs that could provide data for [start_date, end_date]."""
+    # Runs cover [Date - 2 days, Date + 5 days].
+    # To cover any day in [start, end], runs could be published between start - 5 days and end + 2 days.
+    search_start = start_date - timedelta(days=5)
+    search_end = end_date + timedelta(days=2)
     
-    date_str = date.strftime("%Y%m%d")
-    year_str = date.strftime("%Y")
-    month_str = date.strftime("%m")
-    
-    dir_url = f"{BASE_URL}/{year_str}/{month_str}/"
-    try:
-        content = requests.get(dir_url).text
-    except Exception:
-        content = ""
+    months_to_check = set()
+    curr = search_start
+    while curr <= search_end:
+        months_to_check.add((curr.year, curr.month))
+        curr += timedelta(days=1)
         
+    runs = []
     import re
-    pattern = r'swpc_wsaenlil_([a-zA-Z]+)_' + date_str + r'_(\d{4})\.tar\.gz'
-    matches = re.findall(pattern, content)
+    pattern = r'swpc_wsaenlil_([a-zA-Z]+)_(\d{8})_(\d{4})\.tar\.gz'
     
-    if not matches:
-        return []
+    for year, month in sorted(months_to_check):
+        url = f"{BASE_URL}/{year:04d}/{month:02d}/"
+        try:
+            content = requests.get(url, timeout=10).text
+        except Exception:
+            continue
+            
+        for match in re.finditer(pattern, content):
+            mode = match.group(1).lower()
+            date_str = match.group(2)
+            time_str = match.group(3)
+            
+            run_dt = datetime.strptime(date_str, "%Y%m%d")
+            run_start = run_dt - timedelta(days=2)
+            run_end = run_dt + timedelta(days=5)
+            
+            if run_end >= start_date and run_start <= end_date:
+                filename = match.group(0)
+                runs.append({
+                    "mode": mode,
+                    "date": run_dt,
+                    "time": time_str,
+                    "filename": filename,
+                    "url": f"{url}{filename}",
+                    "valid_start": pd.Timestamp(run_start),
+                    "valid_end": pd.Timestamp(run_end) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+                })
+    return runs
 
-    cme_matches = [m for m in matches if m[0] != 'bkg']
-    bkg_matches = [m for m in matches if m[0] == 'bkg']
+def get_authoritative_timeline(start_date: datetime, end_date: datetime, runs: list) -> list:
+    """Build non-overlapping intervals prioritizing CME > BKG, then newest."""
+    target_start = pd.Timestamp(start_date)
+    target_end = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
     
-    if cme_matches:
-        cme_matches.sort(key=lambda x: x[1], reverse=True)
-        best_mode, best_rt = cme_matches[0]
-    elif bkg_matches:
-        bkg_matches.sort(key=lambda x: x[1], reverse=True)
-        best_mode, best_rt = bkg_matches[0]
-    else:
-        return []
+    curr_day = target_start.normalize()
+    end_day = target_end.normalize()
+    
+    daily_mapping = []
+    while curr_day <= end_day:
+        covering_runs = [r for r in runs if r["valid_start"] <= curr_day and r["valid_end"] >= curr_day]
+        if not covering_runs:
+            daily_mapping.append((curr_day, None))
+        else:
+            covering_runs.sort(key=lambda x: (
+                1 if x["mode"] == "cme" else 0,
+                x["date"],
+                x["time"]
+            ), reverse=True)
+            daily_mapping.append((curr_day, covering_runs[0]))
+        curr_day += pd.Timedelta(days=1)
         
-    filename = f"swpc_wsaenlil_{best_mode}_{date_str}_{best_rt}.tar.gz"
-    url = f"{dir_url}{filename}"
+    intervals = []
+    if not daily_mapping: return intervals
+        
+    curr_run = daily_mapping[0][1]
+    int_start = daily_mapping[0][0]
+    
+    for i in range(1, len(daily_mapping)):
+        day, run = daily_mapping[i]
+        if run != curr_run:
+            if curr_run is not None:
+                intervals.append({
+                    "run": curr_run,
+                    "interval_start": int_start,
+                    "interval_end": day - pd.Timedelta(seconds=1)
+                })
+            curr_run = run
+            int_start = day
+            
+    if curr_run is not None:
+        last_day = daily_mapping[-1][0]
+        intervals.append({
+            "run": curr_run,
+            "interval_start": int_start,
+            "interval_end": last_day + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+        })
+        
+    for interval in intervals:
+        interval["interval_start"] = max(interval["interval_start"], target_start)
+        interval["interval_end"] = min(interval["interval_end"], target_end)
+        
+    return intervals
+
+def __download_extract_run(run: dict, cache_path: Path) -> list:
+    filename = run["filename"]
+    url = run["url"]
+    date_str = run["date"].strftime("%Y%m%d")
+    extract_dir = cache_path / f"extracted_{date_str}_{run['time']}_{run['mode']}"
     tar_path = cache_path / filename
-    extract_dir = cache_path / f"extracted_{date_str}_{best_rt}_{best_mode}"
     
     if not tar_path.exists() and not extract_dir.exists():
-        print(f"Downloading {filename} (Mode: {best_mode.upper()})...")
+        print(f"Downloading {filename} (Mode: {run['mode'].upper()})...")
         response = requests.get(url, stream=True)
         if response.status_code == 200:
             with open(tar_path, 'wb') as f:
@@ -83,89 +139,31 @@ def fetch_enlil_data_for_date(date: datetime, default_run_time: str = "0000", ca
             pass
             
     if extract_dir.exists():
-        nc_files = list(extract_dir.rglob("*.nc"))
-        if nc_files:
-            return nc_files
-            
+        return list(extract_dir.rglob("*.nc"))
     return []
 
-def get_enlil_data(start_date: str, end_date: str, run_time: str = "0000", cache_dir: str = "enlil_cache"):
+def get_enlil_data_intervals(start_date: str, end_date: str, cache_dir: str = "enlil_cache") -> list:
+    """Returns a list of dicts: {'nc_files': [...], 'start': ..., 'end': ...}"""
     start = datetime.strptime(start_date, "%Y-%m-%d")
     end = datetime.strptime(end_date, "%Y-%m-%d")
     
-    current_request_date = start
-    all_nc_files = []
+    runs = fetch_available_runs(start, end)
+    intervals = get_authoritative_timeline(start, end, runs)
     
-    while current_request_date <= end:
-        nc_files = fetch_enlil_data_for_date(current_request_date, run_time, cache_dir)
-        
-        jumped = False
+    cache_path = Path(cache_dir)
+    cache_path.mkdir(parents=True, exist_ok=True)
+    
+    result = []
+    for interval in intervals:
+        nc_files = __download_extract_run(interval["run"], cache_path)
         if nc_files:
-            for f in nc_files:
-                if str(f) not in [str(af) for af in all_nc_files]:
-                    all_nc_files.append(f)
-                    
-            try:
-                with xr.open_dataset(nc_files[0], engine='netcdf4', decode_timedelta=True) as ds:
-                    ref_date_str = ds.attrs.get('REFDATE_CAL')
-                    if ref_date_str:
-                        ref_date = pd.to_datetime(ref_date_str)
-                        max_time = None
-                        
-                        for t_var in ['time', 'Earth_TIME']:
-                            if t_var in ds.variables:
-                                max_val = ds[t_var].max().values
-                                t = None
-                                
-                                try:
-                                    if hasattr(max_val, 'dtype'):
-                                        dtype_str = str(max_val.dtype)
-                                    else:
-                                        dtype_str = type(max_val).__name__
-                                        
-                                    if 'datetime64' in dtype_str:
-                                        t = pd.to_datetime(max_val)
-                                    elif 'timedelta' in dtype_str:
-                                        t = ref_date + pd.to_timedelta(max_val)
-                                except Exception:
-                                    pass
-                                    
-                                if t is not None and (max_time is None or t > max_time):
-                                    max_time = t
-                                    
-                        if max_time is not None:
-                            max_date = max_time.to_pydatetime().replace(hour=0, minute=0, second=0, microsecond=0)
-                            if max_date > current_request_date:
-                                # If we downloaded a BKG run, scan intermediate days for a newer CME run.
-                                # A CME run published mid-window is more accurate and should replace the BKG file.
-                                is_bkg = 'bkg' in str(nc_files[0]).lower()
-                                if is_bkg:
-                                    scan_date = current_request_date + timedelta(days=1)
-                                    while scan_date <= min(max_date, end):
-                                        # Check listing only first — no download needed to confirm CME existence
-                                        if _has_cme_on_date(scan_date):
-                                            cme_files = fetch_enlil_data_for_date(scan_date, run_time, cache_dir)
-                                            if cme_files:
-                                                print(f"Newer CME run found on {scan_date.strftime('%Y-%m-%d')}. Replacing BKG run.")
-                                                for old in nc_files:
-                                                    if str(old) in [str(af) for af in all_nc_files]:
-                                                        all_nc_files.remove(old)
-                                                for f in cme_files:
-                                                    if str(f) not in [str(af) for af in all_nc_files]:
-                                                        all_nc_files.append(f)
-                                                nc_files = cme_files
-                                                break
-                                        scan_date += timedelta(days=1)
-
-                                current_request_date = max_date
-                                jumped = True
-            except Exception:
-                pass
-                    
-        if not jumped:
-            current_request_date += timedelta(days=1)
+            result.append({
+                "nc_files": nc_files,
+                "interval_start": interval["interval_start"],
+                "interval_end": interval["interval_end"]
+            })
             
-    return all_nc_files
+    return result
 
 # Default Earth-point variables (1D time series, very small)
 EARTH_VARS = [
@@ -254,24 +252,29 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
     if vars_to_keep is None:
         vars_to_keep = EARTH_VARS
 
-    nc_files = get_enlil_data(start_date, end_date, run_time, cache_dir)
-    if not nc_files:
+    intervals_info = get_enlil_data_intervals(start_date, end_date, cache_dir)
+    if not intervals_info:
         print("No files found for the given dates.")
         return None
 
+    # We do not use these globals; we rely strictly on authoritative intervals
+    # but we still bound by the maximal request size.
     start_dt = pd.Timestamp(start_date)
     end_dt   = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
     slices_t  = []   # pieces along 't'       (3-D time)
     slices_et = []   # pieces along 'earth_t'  (Earth point time)
     global_attrs = {}
-    seen_t_max  = None
-    seen_et_max = None
 
-    for f in sorted(nc_files):
-        try:
-            with xr.open_dataset(f, engine='netcdf4', decode_timedelta=True) as ds_raw:
-                ref_date_str = ds_raw.attrs.get('REFDATE_CAL')
+    for interval in intervals_info:
+        nc_files = interval["nc_files"]
+        int_start = interval["interval_start"]
+        int_end = interval["interval_end"]
+        
+        for f in sorted(nc_files):
+            try:
+                with xr.open_dataset(f, engine='netcdf4', decode_timedelta=True) as ds_raw:
+                    ref_date_str = ds_raw.attrs.get('REFDATE_CAL')
                 if not ref_date_str:
                     continue
                 ref_date = pd.Timestamp(ref_date_str)
@@ -303,30 +306,24 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
 
                 # --- Crop 3-D time (dim 't') ---
                 if 'time' in ds.variables:
-                    t_dim  = ds['time'].dims[0]          # usually 't'
+                    t_dim  = ds['time'].dims[0]
                     t_abs  = ref_date + pd.to_timedelta(ds['time'].values)
-                    mask_t = (t_abs >= start_dt) & (t_abs <= end_dt)
-                    if seen_t_max is not None:
-                        mask_t &= (t_abs > seen_t_max)
+                    mask_t = (t_abs >= int_start) & (t_abs <= int_end)
                     if mask_t.any():
                         s_t = ds.isel({t_dim: mask_t})
-                        seen_t_max = t_abs[mask_t][-1]
                         slices_t.append(s_t)
 
                 # --- Crop Earth_TIME (dim 'earth_t') ---
                 if 'Earth_TIME' in ds.variables:
-                    et_dim  = ds['Earth_TIME'].dims[0]   # usually 'earth_t'
+                    et_dim  = ds['Earth_TIME'].dims[0]
                     et_abs  = ref_date + pd.to_timedelta(ds['Earth_TIME'].values)
-                    mask_et = (et_abs >= start_dt) & (et_abs <= end_dt)
-                    if seen_et_max is not None:
-                        mask_et &= (et_abs > seen_et_max)
+                    mask_et = (et_abs >= int_start) & (et_abs <= int_end)
                     if mask_et.any():
                         s_et = ds.isel({et_dim: mask_et})
-                        seen_et_max = et_abs[mask_et][-1]
                         slices_et.append(s_et)
 
-        except Exception as e:
-            print(f"Warning: Could not process {f}: {e}")
+            except Exception as e:
+                print(f"Warning: Could not process {f}: {e}")
 
     if not slices_t and not slices_et:
         print("No data remained after cropping.")
@@ -387,15 +384,16 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
 
     # Clean up extracted tar directories
     import shutil
-    cleaned: set = set()
-    for nc_file in nc_files:
-        try:
-            extract_dir = Path(nc_file).parent
-            if extract_dir not in cleaned and extract_dir.exists():
-                shutil.rmtree(extract_dir, ignore_errors=True)
-                cleaned.add(extract_dir)
-        except Exception:
-            pass
+    cleaned = set()
+    for interval in intervals_info:
+        for nc_file in interval["nc_files"]:
+            try:
+                extract_dir = Path(nc_file).parent
+                if extract_dir not in cleaned and extract_dir.exists():
+                    shutil.rmtree(extract_dir, ignore_errors=True)
+                    cleaned.add(extract_dir)
+            except Exception:
+                pass
 
     print(f"Saved cropped dataset to {output_path}")
     return output_path
