@@ -318,9 +318,9 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                 
                 # Make time and Earth_TIME proper indexed dimensions
                 dims_to_swap = {}
-                if 'time' in ds.coords and ds.coords['time'].dims == ('t',):
+                if 'time' in ds.variables and ds.variables['time'].dims == ('t',):
                     dims_to_swap['t'] = 'time'
-                if 'Earth_TIME' in ds.coords and ds.coords['Earth_TIME'].dims == ('earth_t',):
+                if 'Earth_TIME' in ds.variables and ds.variables['Earth_TIME'].dims == ('earth_t',):
                     dims_to_swap['earth_t'] = 'Earth_TIME'
                 if dims_to_swap:
                     ds = ds.swap_dims(dims_to_swap)
