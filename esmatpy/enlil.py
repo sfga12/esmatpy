@@ -38,7 +38,7 @@ def fetch_available_runs(start_date: datetime, end_date: datetime) -> list:
             date_str = match.group(2)
             time_str = match.group(3)
             
-            run_dt = datetime.strptime(date_str, "%Y%m%d")
+            run_dt = datetime.strptime(date_str + time_str, "%Y%m%d%H%M")
             run_start = run_dt - timedelta(days=2)
             run_end = run_dt + timedelta(days=5)
             
@@ -139,7 +139,18 @@ def __download_extract_run(run: dict, cache_path: Path) -> list:
             pass
             
     if extract_dir.exists():
-        return list(extract_dir.rglob("*.nc"))
+        nc_files = list(extract_dir.rglob("*.nc"))
+        
+        # Prioritize single summary files over hundreds of individual 3D timestep files
+        # to prevent memory bloat and duplicate coordinate zigzags during concat
+        summary_file = next((f for f in nc_files if "suball" in f.name.lower()), None)
+        if not summary_file:
+            summary_file = next((f for f in nc_files if "latest.nc" in f.name.lower()), None)
+            
+        if summary_file:
+            return [summary_file]
+            
+        return nc_files
     return []
 
 def get_enlil_data_intervals(start_date: str, end_date: str, cache_dir: str = "enlil_cache") -> list:
@@ -375,6 +386,12 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
             ds_final = xr.merge(parts, combine_attrs='override', join='override')
         else:
             ds_final = parts[0]
+
+        # Failsafe sort to prevent plotting zigzags
+        if 'time' in ds_final.coords:
+            ds_final = ds_final.sortby('time')
+        if 'Earth_TIME' in ds_final.coords:
+            ds_final = ds_final.sortby('Earth_TIME')
 
     ds_final.attrs.update(global_attrs)
 
