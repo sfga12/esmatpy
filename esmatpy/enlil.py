@@ -375,7 +375,7 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
 
             ds_t = xr.concat([_prep_t(s) for s in slices_t],
                              dim=t_dim_name, combine_attrs='override',
-                             join='override')
+                             join='outer')
             parts.append(ds_t)
 
         if slices_et:
@@ -393,7 +393,7 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
 
             ds_et = xr.concat([_prep_et(s) for s in slices_et],
                               dim=et_dim_name, combine_attrs='override',
-                              join='override')
+                              join='outer')
             parts.append(ds_et)
 
         if len(parts) == 2:
