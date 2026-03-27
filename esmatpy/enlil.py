@@ -81,11 +81,21 @@ def get_authoritative_timeline(start_date: datetime, end_date: datetime, runs: l
             hourly_mapping.append((curr_time, None))
             active_run = None
         else:
-            covering_runs.sort(key=lambda x: (
-                1 if x["mode"] == "cme" else 0,
-                x["date"],
-                x["time"]
-            ), reverse=True)
+            if minimize_jumps and active_run is not None:
+                # If we're already on a run and minimize_jumps is True, 
+                # we prefer the run that is closest in time to our current one
+                # to minimize "initialization shock" from boundary changes.
+                covering_runs.sort(key=lambda x: (
+                    0 if x["mode"] == "cme" else 1, # CME first
+                    abs((x["date"] - active_run["date"]).total_seconds())
+                ))
+            else:
+                # Standard behavior: newest simulation is best.
+                covering_runs.sort(key=lambda x: (
+                    1 if x["mode"] == "cme" else 0,
+                    x["date"],
+                    x["time"]
+                ), reverse=True)
             
             chosen_run = covering_runs[0]
             
@@ -94,7 +104,7 @@ def get_authoritative_timeline(start_date: datetime, end_date: datetime, runs: l
                 if any(r["filename"] == active_run["filename"] for r in covering_runs):
                     # In hybrid mode, if active is BKG but a CME appears, switch to the CME!
                     if mode == "hybrid" and active_run["mode"] == "bkg" and chosen_run["mode"] == "cme":
-                        pass # allow jump
+                        pass # allow jump to superior data
                     else:
                         chosen_run = active_run # stick to active run
                         
