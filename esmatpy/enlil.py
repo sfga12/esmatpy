@@ -39,7 +39,8 @@ def fetch_available_runs(start_date: datetime, end_date: datetime) -> list:
             time_str = match.group(3)
             
             run_dt = datetime.strptime(date_str + time_str, "%Y%m%d%H%M")
-            run_start = run_dt - timedelta(days=2)
+            # Skip the first 2 days (hindcast/spin-up period) to ensure data stability.
+            run_start = run_dt
             run_end = run_dt + timedelta(days=5)
             
             if run_end >= start_date and run_start <= end_date:
