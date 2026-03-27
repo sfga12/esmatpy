@@ -39,8 +39,7 @@ def fetch_available_runs(start_date: datetime, end_date: datetime) -> list:
             time_str = match.group(3)
             
             run_dt = datetime.strptime(date_str + time_str, "%Y%m%d%H%M")
-            # Skip the first 2 days (hindcast/spin-up period) to ensure data stability.
-            run_start = run_dt
+            run_start = run_dt - timedelta(days=2)
             run_end = run_dt + timedelta(days=5)
             
             if run_end >= start_date and run_start <= end_date:
@@ -283,25 +282,19 @@ def load_enlil_dataset(nc_files: list):
 def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: str,
                                   run_time: str = "0000", cache_dir: str = "enlil_cache",
                                   vars_to_keep: list = None, mode: str = "hybrid",
-                                  minimize_jumps: bool = False):
+                                  minimize_jumps: bool = False, blend_hours: int = 12):
     """
     Downloads ENLIL data for the given date range, crops to the window, and saves
-    a single NetCDF file.
+    a single NetCDF file with linear blending between simulation transitions.
 
     Args:
         mode: 'hybrid' (CME prioritized, BKG fallback), 'cme' (strict CME), or 'bkg' (strict BKG)
-        minimize_jumps: If True, sticks to the current simulation continuously for as long as physically possible before switching.
-
+        minimize_jumps: If True, sticks to the current simulation continuously for as long as possible.
+        blend_hours: Number of hours for linear crossfade between simulation runs.
 
     Dimension names are preserved as-is from the source files:
       - 3D time  → dim 't',       variable 'time'  (timedelta64 relative to REFDATE_CAL)
       - Earth ts → dim 'earth_t', variable 'Earth_TIME' (timedelta64 relative to REFDATE_CAL)
-
-    Visualise with:
-        ds = xr.open_dataset(output_path)
-        ref = pd.to_datetime(ds.attrs['REFDATE_CAL'])
-        t_abs = ref + pd.to_timedelta(ds['time'].values)   # absolute datetimes
-        raw = ds['dd13_3d'].isel(t=time_idx).values
     """
     if vars_to_keep is None:
         vars_to_keep = EARTH_VARS
@@ -311,8 +304,6 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
         print("No files found for the given dates.")
         return None
 
-    # We do not use these globals; we rely strictly on authoritative intervals
-    # but we still bound by the maximal request size.
     start_dt = pd.Timestamp(start_date)
     end_dt   = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
@@ -320,11 +311,16 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
     slices_et = []   # pieces along 'earth_t'  (Earth point time)
     global_attrs = {}
 
-    for interval in intervals_info:
+    for i, interval in enumerate(intervals_info):
         nc_files = interval["nc_files"]
         int_start = interval["interval_start"]
         int_end = interval["interval_end"]
         
+        # Extend the interval end for blending purposes if there is a next one
+        effective_end = int_end
+        if blend_hours > 0 and i < len(intervals_info) - 1:
+            effective_end = int_end + pd.Timedelta(hours=blend_hours)
+
         for f in sorted(nc_files):
             try:
                 with xr.open_dataset(f, engine='netcdf4', decode_timedelta=True) as ds_raw:
@@ -336,56 +332,44 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                     global_attrs = dict(ds_raw.attrs)
                     global_ref_date = ref_date
 
-                # --- Select requested variables ---
+                # --- Selection ---
                 available = [v for v in vars_to_keep if v in ds_raw.variables]
-                if not available:
-                    continue
+                if not available: continue
 
-                # Always load time variables for cropping (original timedelta form)
-                time_extra = [v for v in ['time', 'Earth_TIME']
-                              if v in ds_raw.variables and v not in available]
+                time_extra = [v for v in ['time', 'Earth_TIME'] if v in ds_raw.variables and v not in available]
+                selected_dims = {d for v in available for d in ds_raw[v].dims}
+                coord_extra = [v for v in ds_raw.variables if v not in (available + time_extra + ['time', 'Earth_TIME'])
+                               and len(ds_raw[v].dims) == 1 and ds_raw[v].dims[0] in selected_dims]
 
-                # Auto-include 1-D spatial coordinate arrays (x_coord, z_coord, …)
-                selected_dims: set = set()
-                for v in available:
-                    selected_dims.update(ds_raw[v].dims)
-                coord_extra = [
-                    v for v in ds_raw.variables
-                    if v not in available and v not in time_extra
-                    and v not in ('time', 'Earth_TIME')
-                    and len(ds_raw[v].dims) == 1
-                    and ds_raw[v].dims[0] in selected_dims
-                ]
-
-                ds = ds_raw[available + time_extra + coord_extra].load()
+                ds_crop = ds_raw[available + time_extra + coord_extra].load()
                 
-                # Make time and Earth_TIME proper indexed dimensions
+                # Swap dims
                 dims_to_swap = {}
-                if 'time' in ds.variables and ds.variables['time'].dims == ('t',):
+                if 'time' in ds_crop.variables and ds_crop.variables['time'].dims == ('t',):
                     dims_to_swap['t'] = 'time'
-                if 'Earth_TIME' in ds.variables and ds.variables['Earth_TIME'].dims == ('earth_t',):
+                if 'Earth_TIME' in ds_crop.variables and ds_crop.variables['Earth_TIME'].dims == ('earth_t',):
                     dims_to_swap['earth_t'] = 'Earth_TIME'
                 if dims_to_swap:
-                    ds = ds.swap_dims(dims_to_swap)
+                    ds_crop = ds_crop.swap_dims(dims_to_swap)
 
-                # --- Crop 3-D time (dim 't') ---
-                if 'time' in ds.variables:
-                    t_dim  = ds['time'].dims[0]
-                    t_abs  = ref_date + pd.to_timedelta(ds['time'].values)
-                    mask_t = (t_abs >= int_start) & (t_abs <= int_end)
+                # --- Crop 3-D time (with potential overlap extension) ---
+                if 'time' in ds_crop.variables:
+                    t_dim  = ds_crop['time'].dims[0]
+                    t_abs  = ref_date + pd.to_timedelta(ds_crop['time'].values)
+                    mask_t = (t_abs >= int_start) & (t_abs <= effective_end)
                     if mask_t.any():
-                        s_t = ds.isel({t_dim: mask_t})
+                        s_t = ds_crop.isel({t_dim: mask_t})
                         new_t = t_abs[mask_t] - global_ref_date
                         s_t = s_t.assign_coords({'time': new_t.values})
                         slices_t.append(s_t)
 
-                # --- Crop Earth_TIME (dim 'earth_t') ---
-                if 'Earth_TIME' in ds.variables:
-                    et_dim  = ds['Earth_TIME'].dims[0]
-                    et_abs  = ref_date + pd.to_timedelta(ds['Earth_TIME'].values)
-                    mask_et = (et_abs >= int_start) & (et_abs <= int_end)
+                # --- Crop Earth_TIME (with potential overlap extension) ---
+                if 'Earth_TIME' in ds_crop.variables:
+                    et_dim  = ds_crop['Earth_TIME'].dims[0]
+                    et_abs  = ref_date + pd.to_timedelta(ds_crop['Earth_TIME'].values)
+                    mask_et = (et_abs >= int_start) & (et_abs <= effective_end)
                     if mask_et.any():
-                        s_et = ds.isel({et_dim: mask_et})
+                        s_et = ds_crop.isel({et_dim: mask_et})
                         new_et = et_abs[mask_et] - global_ref_date
                         s_et = s_et.assign_coords({'Earth_TIME': new_et.values})
                         slices_et.append(s_et)
@@ -401,61 +385,73 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
 
-        parts = []
-        if slices_t:
-            t_dim_name  = slices_t[0]['time'].dims[0]        # 'time'
-            et_dim_name = (slices_et[0]['Earth_TIME'].dims[0]
-                           if slices_et else 'Earth_TIME')       # 'Earth_TIME'
-            def _prep_t(s):
-                # Drop earth_t-based vars from 3D slices
-                drop = [v for v in s.data_vars if et_dim_name in s[v].dims]
-                if et_dim_name in s.coords:
-                    drop.append(et_dim_name)
+        # Function to merge or blend slices along a time dimension
+        def _process_slices(slices, time_dim, other_time_dim, blend_h):
+            if not slices: return None
+            
+            def _prep(s):
+                drop = [v for v in s.data_vars if other_time_dim in s[v].dims]
+                if other_time_dim in s.coords: drop.append(other_time_dim)
                 s = s.drop_vars(drop, errors='ignore')
-                # Promote spatial vars to coords so xr.concat doesn't stack them
-                spatial = [v for v in s.data_vars
-                           if len(s[v].dims) == 1
-                           and s[v].dims[0] not in (t_dim_name, et_dim_name)]
+                spatial = [v for v in s.data_vars if len(s[v].dims) == 1 and s[v].dims[0] not in (time_dim, other_time_dim)]
                 return s.set_coords(spatial)
 
-            ds_t = xr.concat([_prep_t(s) for s in slices_t],
-                             dim=t_dim_name, combine_attrs='override',
-                             join='outer')
-            parts.append(ds_t)
+            prepped = [_prep(s) for s in slices]
+            
+            # Identify overlaps and blend
+            # Since slices are sorted by their start time in intervals_info, 
+            # we can identify contiguous/overlapping regions.
+            res = prepped[0]
+            for i in range(1, len(prepped)):
+                next_ds = prepped[i]
+                
+                # Common time range
+                t_common = np.intersect1d(res[time_dim].values, next_ds[time_dim].values)
+                
+                if len(t_common) > 0 and blend_h > 0:
+                    t0, t1 = t_common[0], t_common[-1]
+                    total_span = t1 - t0
+                    
+                    if total_span > 0:
+                        # Weights: res fades out 1->0, next_ds fades in 0->1
+                        # convert to nanoseconds for calculation
+                        weights = (next_ds.sel({time_dim: t_common})[time_dim].values.astype(float) - float(t0)) / float(total_span)
+                        w2 = xr.DataArray(weights, coords={time_dim: t_common}, dims=[time_dim])
+                        w1 = 1.0 - w2
+                        
+                        # Apply weights to all data variables in the overlap
+                        overlap_vars = [v for v in res.data_vars if v in next_ds.data_vars and time_dim in res[v].dims]
+                        for v in overlap_vars:
+                            # We must handle dtypes (int16 vs float)
+                            v1 = res[v].sel({time_dim: t_common})
+                            v2 = next_ds[v].sel({time_dim: t_common})
+                            blended = v1 * w1 + v2 * w2
+                            # Preserve attrs (like dd13_max/min for int16 packed data)
+                            blended.attrs.update(v1.attrs)
+                            
+                            # Replace in both datasets (so concat later picks up the blended values)
+                            # Actually we only need it in one or we can manually concat
+                            res[v].loc[{time_dim: t_common}] = blended
+                    
+                    # Concat remaining non-overlapping part of next_ds
+                    t_new = next_ds[time_dim].values[next_ds[time_dim].values > t1]
+                    if len(t_new) > 0:
+                        res = xr.concat([res, next_ds.sel({time_dim: t_new})], dim=time_dim, combine_attrs='override')
+                else:
+                    # Generic concat
+                    res = xr.concat([res, next_ds], dim=time_dim, combine_attrs='override', join='outer')
+            
+            return res.sortby(time_dim)
 
-        if slices_et:
-            et_dim_name = slices_et[0]['Earth_TIME'].dims[0]  # 'Earth_TIME'
-            t_dim_name2 = (slices_t[0]['time'].dims[0]
-                           if slices_t else 'time')               # 'time'
-            def _prep_et(s):
-                # Drop t-based vars from Earth slices
-                drop = [v for v in s.data_vars if t_dim_name2 in s[v].dims]
-                if t_dim_name2 in s.coords:
-                    drop.append(t_dim_name2)
-                s = s.drop_vars(drop, errors='ignore')
-                spatial = [v for v in s.data_vars
-                           if len(s[v].dims) == 1
-                           and s[v].dims[0] not in (t_dim_name2, et_dim_name)]
-                return s.set_coords(spatial)
+        ds_t = _process_slices(slices_t, 'time', 'Earth_TIME', blend_hours)
+        ds_et = _process_slices(slices_et, 'Earth_TIME', 'time', blend_hours)
 
-            ds_et = xr.concat([_prep_et(s) for s in slices_et],
-                              dim=et_dim_name, combine_attrs='override',
-                              join='outer')
-            parts.append(ds_et)
-
-        if len(parts) == 2:
-            ds_final = xr.merge(parts, combine_attrs='override', join='outer')
+        if ds_t and ds_et:
+            ds_final = xr.merge([ds_t, ds_et], combine_attrs='override', join='outer')
         else:
-            ds_final = parts[0]
-
-        # Failsafe sort to prevent plotting zigzags
-        if 'time' in ds_final.coords:
-            ds_final = ds_final.sortby('time')
-        if 'Earth_TIME' in ds_final.coords:
-            ds_final = ds_final.sortby('Earth_TIME')
+            ds_final = ds_t if ds_t else ds_et
 
     ds_final.attrs.update(global_attrs)
-
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     ds_final.to_netcdf(output_path)
     ds_final.close()
