@@ -316,10 +316,11 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
         int_start = interval["interval_start"]
         int_end = interval["interval_end"]
         
-        # Extend the interval end for blending purposes if there is a next one
-        effective_end = int_end
-        if blend_hours > 0 and i < len(intervals_info) - 1:
-            effective_end = int_end + pd.Timedelta(hours=blend_hours)
+        # Extend the interval start for blending purposes (except for the first one)
+        # This ensures we have data from both runs during the transition.
+        eff_start = int_start
+        if blend_hours > 0 and i > 0:
+            eff_start = int_start - pd.Timedelta(hours=blend_hours)
 
         for f in sorted(nc_files):
             try:
@@ -356,7 +357,7 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                 if 'time' in ds_crop.variables:
                     t_dim  = ds_crop['time'].dims[0]
                     t_abs  = ref_date + pd.to_timedelta(ds_crop['time'].values)
-                    mask_t = (t_abs >= int_start) & (t_abs <= effective_end)
+                    mask_t = (t_abs >= eff_start) & (t_abs <= int_end)
                     if mask_t.any():
                         s_t = ds_crop.isel({t_dim: mask_t})
                         new_t = t_abs[mask_t] - global_ref_date
@@ -367,7 +368,7 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                 if 'Earth_TIME' in ds_crop.variables:
                     et_dim  = ds_crop['Earth_TIME'].dims[0]
                     et_abs  = ref_date + pd.to_timedelta(ds_crop['Earth_TIME'].values)
-                    mask_et = (et_abs >= int_start) & (et_abs <= effective_end)
+                    mask_et = (et_abs >= eff_start) & (et_abs <= int_end)
                     if mask_et.any():
                         s_et = ds_crop.isel({et_dim: mask_et})
                         new_et = et_abs[mask_et] - global_ref_date
@@ -405,41 +406,50 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
             for i in range(1, len(prepped)):
                 next_ds = prepped[i]
                 
-                # Common time range
-                t_common = np.intersect1d(res[time_dim].values, next_ds[time_dim].values)
+                # Identify actual overlap range
+                t_min = max(res[time_dim].min(), next_ds[time_dim].min()).values
+                t_max = min(res[time_dim].max(), next_ds[time_dim].max()).values
                 
-                if len(t_common) > 0 and blend_h > 0:
-                    t0, t1 = t_common[0], t_common[-1]
-                    total_span = t1 - t0
+                if t_max > t_min and blend_h > 0:
+                    # Identify points in 'res' that are in the overlap
+                    t_blend_mask = (res[time_dim] >= t_min) & (res[time_dim] <= t_max)
+                    t_blend = res[time_dim].where(t_blend_mask, drop=True)
                     
-                    if total_span > 0:
-                        # Weights: res fades out 1->0, next_ds fades in 0->1
-                        # convert to nanoseconds for calculation
-                        weights = (next_ds.sel({time_dim: t_common})[time_dim].values.astype(float) - float(t0)) / float(total_span)
-                        w2 = xr.DataArray(weights, coords={time_dim: t_common}, dims=[time_dim])
-                        w1 = 1.0 - w2
+                    if len(t_blend[time_dim]) > 1:
+                        # Interpolate next_ds to match res's time steps in the overlap
+                        # This handles slightly misaligned time grids between runs.
+                        next_ds_interp = next_ds.interp({time_dim: t_blend[time_dim]}, method='linear')
                         
-                        # Apply weights to all data variables in the overlap
-                        overlap_vars = [v for v in res.data_vars if v in next_ds.data_vars and time_dim in res[v].dims]
-                        for v in overlap_vars:
-                            # We must handle dtypes (int16 vs float)
-                            v1 = res[v].sel({time_dim: t_common})
-                            v2 = next_ds[v].sel({time_dim: t_common})
-                            blended = v1 * w1 + v2 * w2
-                            # Preserve attrs (like dd13_max/min for int16 packed data)
-                            blended.attrs.update(v1.attrs)
+                        t0, t1 = t_blend[time_dim].min().values, t_blend[time_dim].max().values
+                        total_span = float(t1.astype(float) - t0.astype(float))
+                        
+                        if total_span > 0:
+                            # Weights: res fades out 1->0, next_ds fades in 0->1
+                            weights = (t_blend[time_dim].values.astype(float) - float(t0.astype(float))) / total_span
+                            w2 = xr.DataArray(weights, coords={time_dim: t_blend[time_dim]}, dims=[time_dim])
+                            w1 = 1.0 - w2
                             
-                            # Replace in both datasets (so concat later picks up the blended values)
-                            # Actually we only need it in one or we can manually concat
-                            res[v].loc[{time_dim: t_common}] = blended
+                            # Apply weights
+                            overlap_vars = [v for v in res.data_vars if v in next_ds.data_vars and time_dim in res[v].dims]
+                            for v in overlap_vars:
+                                v1 = res[v].sel({time_dim: t_blend[time_dim]})
+                                v2 = next_ds_interp[v]
+                                blended = v1 * w1 + v2 * w2
+                                blended.attrs.update(v1.attrs)
+                                res[v].loc[{time_dim: t_blend[time_dim]}] = blended
                     
                     # Concat remaining non-overlapping part of next_ds
-                    t_new = next_ds[time_dim].values[next_ds[time_dim].values > t1]
-                    if len(t_new) > 0:
-                        res = xr.concat([res, next_ds.sel({time_dim: t_new})], dim=time_dim, combine_attrs='override')
+                    t_new_mask = next_ds[time_dim] > t_max
+                    t_new = next_ds.where(t_new_mask, drop=True)
+                    if len(t_new[time_dim]) > 0:
+                        res = xr.concat([res, t_new], dim=time_dim, combine_attrs='override')
                 else:
-                    # Generic concat
-                    res = xr.concat([res, next_ds], dim=time_dim, combine_attrs='override', join='outer')
+                    # No overlap, or no blending. 
+                    # Only concat the part of next_ds that is strictly after res
+                    t_new_mask = next_ds[time_dim] > res[time_dim].max()
+                    t_new = next_ds.where(t_new_mask, drop=True)
+                    if len(t_new[time_dim]) > 0:
+                        res = xr.concat([res, t_new], dim=time_dim, combine_attrs='override')
             
             return res.sortby(time_dim)
 
