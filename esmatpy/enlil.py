@@ -57,8 +57,8 @@ def fetch_available_runs(start_date: datetime, end_date: datetime) -> list:
                 })
     return runs
 
-def get_authoritative_timeline(start_date: datetime, end_date: datetime, runs: list, mode: str = "hybrid", minimize_jumps: bool = False) -> list:
-    """Build non-overlapping intervals prioritizing CME > BKG, then newest."""
+def get_authoritative_timeline(start_date: datetime, end_date: datetime, runs: list, mode: str = "hybrid", minimize_jumps: bool = False, blend_hours: int = 0) -> list:
+    """Build non-overlapping intervals prioritizing CME > BKG, then longest-lasting with enough overlap."""
     target_start = pd.Timestamp(start_date)
     target_end = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
     
@@ -82,17 +82,24 @@ def get_authoritative_timeline(start_date: datetime, end_date: datetime, runs: l
             active_run = None
         else:
             if minimize_jumps and active_run is not None:
-                # If we're already on a run and minimize_jumps is True, 
-                # we prefer the run that is closest in time to our current one
-                # to minimize "initialization shock" from boundary changes.
-                covering_runs.sort(key=lambda x: (
-                    0 if x["mode"] == "cme" else 1, # CME first
-                    abs((x["date"] - active_run["date"]).total_seconds())
-                ))
-            else:
-                # Standard behavior: newest simulation is best.
+                # We want a run that covers curr_time but also has enough history overlap for blend_hours
+                blend_start_req = curr_time - pd.Timedelta(hours=blend_hours)
+                
                 covering_runs.sort(key=lambda x: (
                     1 if x["mode"] == "cme" else 0,
+                    # Prefer runs that start early enough for a smooth blend
+                    1 if pd.Timestamp(x["run_start"]) <= blend_start_req else 0,
+                    # Prefer runs that last as long as possible into the future (minimizes jumps)
+                    x["run_end"],
+                    # Tie-breaker: Newest
+                    x["date"],
+                    x["time"]
+                ), reverse=True)
+            else:
+                # Initial choice or jumping disabled: Newest/Longest is best
+                covering_runs.sort(key=lambda x: (
+                    1 if x["mode"] == "cme" else 0,
+                    x["run_end"],
                     x["date"],
                     x["time"]
                 ), reverse=True)
@@ -189,13 +196,13 @@ def __download_extract_run(run: dict, cache_path: Path) -> list:
         return nc_files
     return []
 
-def get_enlil_data_intervals(start_date: str, end_date: str, cache_dir: str = "enlil_cache", mode: str = "hybrid", minimize_jumps: bool = False) -> list:
+def get_enlil_data_intervals(start_date: str, end_date: str, cache_dir: str = "enlil_cache", mode: str = "hybrid", minimize_jumps: bool = False, blend_hours: int = 0) -> list:
     """Returns a list of dicts: {'nc_files': [...], 'start': ..., 'end': ...}"""
     start = datetime.strptime(start_date, "%Y-%m-%d")
     end = datetime.strptime(end_date, "%Y-%m-%d")
     
     runs = fetch_available_runs(start, end)
-    intervals = get_authoritative_timeline(start, end, runs, mode, minimize_jumps)
+    intervals = get_authoritative_timeline(start, end, runs, mode, minimize_jumps, blend_hours)
     
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
@@ -299,7 +306,7 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
     if vars_to_keep is None:
         vars_to_keep = EARTH_VARS
 
-    intervals_info = get_enlil_data_intervals(start_date, end_date, cache_dir, mode, minimize_jumps)
+    intervals_info = get_enlil_data_intervals(start_date, end_date, cache_dir, mode, minimize_jumps, blend_hours=blend_hours)
     if not intervals_info:
         print("No files found for the given dates.")
         return None
