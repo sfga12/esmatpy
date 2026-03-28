@@ -431,8 +431,11 @@ def create_cropped_enlil_dataset(start_date: str, end_date: str, output_path: st
                         total_span = float(t1.astype(float) - t0.astype(float))
                         
                         if total_span > 0:
-                            # Weights: res fades out 1->0, next_ds fades in 0->1
-                            weights = (t_blend[time_dim].values.astype(float) - float(t0.astype(float))) / total_span
+                            # Cosine-based weights for $C^1$ continuity (Ease-in / Ease-out)
+                            # x goes from 0 to 1 over the blend window
+                            x = (t_blend[time_dim].values.astype(float) - float(t0.astype(float))) / total_span
+                            weights = (1.0 - np.cos(np.pi * x)) / 2.0
+                            
                             w2 = xr.DataArray(weights, coords={time_dim: t_blend[time_dim]}, dims=[time_dim])
                             w1 = 1.0 - w2
                             
