@@ -717,7 +717,20 @@ PYBIND11_MODULE(core, m) {
         .def_readwrite("dvy", &BurnEntry::dvy)
         .def_readwrite("dvz", &BurnEntry::dvz)
         .def_readwrite("isVNB", &BurnEntry::isVNB)
-        .def_readwrite("refBodyID", &BurnEntry::refBodyID);
+        .def_readwrite("refBodyID", &BurnEntry::refBodyID)
+        .def("__repr__", [](const BurnEntry &b) {
+            std::string s = "<BurnEntry trigger=";
+            if (b.trigger == TriggerType::GET) {
+                s += "Time(GET) params=" + std::to_string((int)b.get_h) + ":" + std::to_string((int)b.get_m) + ":" + std::to_string(b.get_s);
+            } else if (b.trigger == TriggerType::APSIS) {
+                s += "Apsis params=" + std::string(b.apsisType == 0 ? "Apoapsis" : "Periapsis");
+            } else if (b.trigger == TriggerType::ALTITUDE) {
+                const char* ops[] = {"<", "<=", ">=", ">"};
+                s += "Altitude params=" + std::string(b.altCondition >= 0 && b.altCondition < 4 ? ops[b.altCondition] : "<=") + " " + std::to_string(b.targetAltKM) + " km";
+            }
+            s += " dV=(" + std::to_string(b.dvx) + "," + std::to_string(b.dvy) + "," + std::to_string(b.dvz) + ") ref=" + std::to_string(b.refBodyID) + ">";
+            return s;
+        });
         
     py::class_<SimulationSettings>(m, "SimulationSettings")
         .def(py::init<>())
