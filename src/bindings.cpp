@@ -341,11 +341,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
             SpiceInt n; SpiceDouble j2v[1];
             bodvcd_c(j2QueryID, "J2", 1, &n, j2v);
             b.J2 = j2v[0];
-        } else {
-            if (j2QueryID == 399) b.J2 = 0.001082626;  // Earth
-            else if (j2QueryID == 301) b.J2 = 0.0002027; // Moon
-            else if (j2QueryID == 499) b.J2 = 0.001964;  // Mars
         }
+        // If not in kernel, J2 stays 0 (acceptable for interplanetary transfers)
         // Approximate name
         SpiceChar name[32]; SpiceBoolean found;
         bodc2n_c(id, 32, name, &found);
@@ -629,13 +626,12 @@ std::vector<BurnEntry> calculate_navigation_plan(
         printf("[NAV-DBG] Dep pos (CB frame): X=%d Y=%d Z=%d km | |v|=%f\n", (int)current_r.x, (int)current_r.y, (int)current_r.z, glm::length(current_v));
 
         double j2 = 0.0;
-        if (bodfnd_c(centralBodyIdx, "J2")) {
+        int j2CentralID = BarycenterToPlanetID(centralBodyIdx);
+        if (bodfnd_c(j2CentralID, "J2")) {
             SpiceInt n;
-            bodvcd_c(centralBodyIdx, "J2", 1, &n, &j2);
-        } else {
-            if (centralBodyIdx == 399) j2 = 0.001082626; // Earth fallback
-            else if (centralBodyIdx == 301) j2 = 0.0002027; // Moon fallback
+            bodvcd_c(j2CentralID, "J2", 1, &n, &j2);
         }
+        // If not in kernel, J2 stays 0
         
         double r_peri_target = target_radius + targets[0].targetAltKm;
         
