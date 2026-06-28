@@ -5,8 +5,6 @@
 #include <string>
 #include <cmath>
 #include "SpiceUsr.h"
-#include "NavigationSystem.h"
-
 namespace py = pybind11;
 
 // --- COPY OF REQUIRED STRUCTS TO AVOID DEPENDENCY HELL ---
