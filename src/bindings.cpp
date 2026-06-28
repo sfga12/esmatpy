@@ -459,6 +459,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
                     best_test_r = test_r;
                     best_target_v = target_v;
                     best_target_r = target_pos_center;
+                    py::print("Iterasyon: Daha iyi bir rota bulundu! -> Bekleme:", dep, "gun, Ucus:", tof_d, "gun | Toplam dV:", min_dv, "km/s");
                 }
             }
         }
