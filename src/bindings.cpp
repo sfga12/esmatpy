@@ -383,25 +383,23 @@ std::vector<BurnEntry> calculate_navigation_plan(
     double best_dep = initial_delay_days;
     double best_tof = T_h / 86400.0;
 
-    double dep_step = (S / 86400.0) / 40.0; 
-    double tof_step = (T_h / 86400.0) / 40.0;
-    if (dep_step < 0.1) dep_step = 0.1;
-    if (tof_step < 0.1) tof_step = 0.1;
-    
-    // For interplanetary: cap search to 1 synodic period or 365 days (whichever is smaller)
-    double dep_max = (S/86400.0) + dep_step;
-    if (dep_max > 365.0) dep_max = 365.0;
-    // Ensure reasonable step count for interplanetary
-    if (dep_max > 50.0 && dep_step < 1.0) dep_step = 1.0;
+    // Fully physics-derived grid: always N_DEP x N_TOF points, no hardcoded thresholds
+    const int N_DEP = 40;
+    const int N_TOF = 40;
+
+    double dep_max = (S / 86400.0); // One full synodic period
+    double dep_step = dep_max / N_DEP;
+    if (dep_step < 1e-3) dep_step = 1e-3;
 
     if (r1_dist < 150000.0) {
+        // Spacecraft is in a parking orbit: search over 2 orbital periods
         double v0_mag = glm::length(sc_vel);
         double eps = (v0_mag * v0_mag) / 2.0 - sc_mu / glm::length(sc_pos);
         if (eps < 0.0) {
             double sma_o = -sc_mu / (2.0 * eps);
             double T_orbit = 2.0 * 3.1415926535 * std::sqrt((sma_o*sma_o*sma_o)/sc_mu);
             dep_max = (T_orbit / 86400.0) * 2.0;
-            dep_step = (T_orbit / 86400.0) / 100.0;
+            dep_step = dep_max / N_DEP;
         } else {
             dep_max = 0.0;
         }
@@ -433,13 +431,10 @@ std::vector<BurnEntry> calculate_navigation_plan(
         }
         
         double hohmann_tof_days = T_h / 86400.0;
-        // For interplanetary (TOF > 50d), use coarser grid to stay fast
-        bool is_interplanetary = (hohmann_tof_days > 50.0);
+        // TOF search range and step are fully derived from Hohmann TOF
         double search_tof_min = hohmann_tof_days * 0.4;
-        double search_tof_max = hohmann_tof_days * (is_interplanetary ? 1.3 : 1.5);
-        
-        double current_tof_steps = (hohmann_tof_days < 10.0) ? 40.0 : (is_interplanetary ? 40.0 : 80.0);
-        tof_step = (search_tof_max - search_tof_min) / current_tof_steps;
+        double search_tof_max = hohmann_tof_days * 1.5;
+        tof_step = (search_tof_max - search_tof_min) / N_TOF;
 
         for (double tof_d = search_tof_min; tof_d <= search_tof_max; tof_d += tof_step) {
             double arrET = testET + tof_d * 86400.0;
@@ -645,10 +640,11 @@ std::vector<BurnEntry> calculate_navigation_plan(
             glm::dvec3 v_start = current_v + (V * dvv + N * dvn + B * dvb);
             glm::dvec3 r = current_r; glm::dvec3 v = v_start;
             double t = current_t;
-            double h_base = 10.0;
+            // Adaptive timestep: always ~5000 steps regardless of TOF
+            double flight_duration = tof_sec * 1.05; // 5% margin beyond TOF
+            double h_base = std::clamp(flight_duration / 5000.0, 1.0, 3600.0);
             double elapsed_t = 0.0;
-            double min_dist = 1e18;
-            double flight_duration = tof_sec + 86400.0 * 2.0; 
+            double min_dist = 1e18; 
             
             while (elapsed_t < flight_duration) {
                 double stT[6], lt; spkgeo_c(targets[0].spiceID, t, "J2000", centralBodyIdx, stT, &lt);
