@@ -465,7 +465,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
                     best_test_r = test_r;
                     best_target_v = target_v;
                     best_target_r = target_pos_center;
-                    py::print("Iterasyon: Daha iyi bir rota bulundu! -> Bekleme:", dep, "gun, Ucus:", tof_d, "gun | Toplam dV:", min_dv, "km/s");
+                    py::print("Iterasyon: Daha iyi bir rota bulundu! -> Bekleme:", dep, "gun, Ucus:", tof_d, "gun | Toplam dV:", min_dv, "km/s", py::arg("flush")=true);
                 }
             }
         }
@@ -700,7 +700,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
             double err = d0 - r_peri_target;
             
             if (targets[0].objective == MissionObjective::Impact && d0 <= r_peri_target) {
-                py::print("[PILOT] Iter", iter, ": IMPACT at", (int)d0, "km from center - surface confirmed.");
+                py::print("[PILOT] Iter", iter, ": IMPACT at", (int)d0, "km from center - surface confirmed.", py::arg("flush")=true);
                 break;
             }
             if (std::abs(err) < 0.1) break;
@@ -718,9 +718,9 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 double adj_n = std::clamp(step * ddn, -max_adj, max_adj); dv_n -= adj_n * 0.8;
                 double adj_b = std::clamp(step * ddb, -max_adj, max_adj); dv_b -= adj_b * 0.8;
             }
-            py::print("[PILOT] Iter", iter, ": Periapsis=", (int)d0, "km (Err:", (int)err, "km)");
+            py::print("[PILOT] Iter", iter, ": Periapsis=", (int)d0, "km (Err:", (int)err, "km)", py::arg("flush")=true);
         }
-        py::print("[NAV] Virtual Pilot Converged at", (int)last_dist, "km radius (altitude:", (int)(last_dist - target_radius), "km).");
+        py::print("[NAV] Virtual Pilot Converged at", (int)last_dist, "km radius (altitude:", (int)(last_dist - target_radius), "km).", py::arg("flush")=true);
         
         // Final Output as VNB
         // VNB convention: X=Velocity(prograde), Y=Normal(orbit-normal), Z=Binormal(radial)
