@@ -26,3 +26,7 @@ data/
 env/
 venv/
 ENV/
+
+*.pyd
+*.so
+*.dll
