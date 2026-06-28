@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 import esmatpy.core as esmat
 
 # Kernels
-kernel_dir = r"datas" # Update this path to your local SPICE kernels folder
+kernel_dir = r"../datas"
 esmat.load_kernel(f"{kernel_dir}/de440.bsp")
 esmat.load_kernel(f"{kernel_dir}/naif0012.tls")
 esmat.load_kernel(f"{kernel_dir}/pck00011.tpc")
@@ -44,11 +44,31 @@ burn_table = esmat.calculate_navigation_plan(
     initial_delay_days=0.0
 )
 
+import csv
+
 print("\n--- Olusturulan Mission Table ---")
-for burn in burn_table:
-    if burn.trigger == esmat.TriggerType.GET:
-        print(f"Trigger: Time (GET) | Params: {burn.get_h}:{burn.get_m}:{burn.get_s} | dV: ({burn.dvx:.5f}, {burn.dvy:.5f}, {burn.dvz:.5f}) | Ref: {burn.refBodyID} | Frame: {'VNB' if burn.isVNB else 'J2000'}")
+csv_data = [["Step", "Trigger", "Parameters", "dV_X (km/s)", "dV_Y (km/s)", "dV_Z (km/s)", "Total_dV (km/s)", "RefBody", "Frame"]]
+
+for i, burn in enumerate(burn_table):
+    total_dv = (burn.dvx**2 + burn.dvy**2 + burn.dvz**2)**0.5
     
+    if burn.trigger == esmat.TriggerType.GET:
+        trigger_name = "Time (GET)"
+        params = f"{burn.get_h}:{burn.get_m}:{burn.get_s}"
     elif burn.trigger == esmat.TriggerType.APSIS:
-        apsis_name = "Apoapsis" if burn.apsisType == 0 else "Periapsis"
-        print(f"Trigger: Orbital Event | Params: {apsis_name} | dV: ({burn.dvx:.5f}, {burn.dvy:.5f}, {burn.dvz:.5f}) | Ref: {burn.refBodyID} | Frame: {'VNB' if burn.isVNB else 'J2000'}")
+        trigger_name = "Orbital Event"
+        params = "Apoapsis" if burn.apsisType == 0 else "Periapsis"
+    elif burn.trigger == esmat.TriggerType.ALTITUDE:
+        trigger_name = "Altitude"
+        params = f"<= {burn.targetAltKM:.1f} km"
+        
+    frame = 'VNB' if burn.isVNB else 'J2000'
+    print(f"[{i+1}] Trigger: {trigger_name} | Params: {params} | dV: ({burn.dvx:.5f}, {burn.dvy:.5f}, {burn.dvz:.5f}) | Ref: {burn.refBodyID} | Frame: {frame}")
+    csv_data.append([i+1, trigger_name, params, f"{burn.dvx:.5f}", f"{burn.dvy:.5f}", f"{burn.dvz:.5f}", f"{total_dv:.5f}", burn.refBodyID, frame])
+
+csv_filename = "mission_plan.csv"
+with open(csv_filename, mode='w', newline='') as file:
+    writer = csv.writer(file)
+    writer.writerows(csv_data)
+
+print(f"\nTablo basariyla '{csv_filename}' dosyasina kaydedildi!")

@@ -621,11 +621,35 @@ std::vector<BurnEntry> calculate_navigation_plan(
     
     // Arrival
     if (targets[0].objective == MissionObjective::OrbitInsertion) {
-        BurnEntry arr_wait;
-        arr_wait.trigger = TriggerType::APSIS;
-        arr_wait.apsisType = 1; // Periapsis
-        arr_wait.refBodyID = targets[0].spiceID;
-        table.push_back(arr_wait);
+        double target_soi = -1.0;
+        double parentGM = 398600.435507; // Assuming Earth as parent for now
+        
+        // Simple SOI estimation for Moon relative to Earth
+        if (targets[0].spiceID == 301) {
+            double d_p = 384400.0; // Approx Earth-Moon distance
+            target_soi = d_p * std::pow(target_gm / parentGM, 0.4);
+        }
+        
+        if (target_soi > 0) {
+            BurnEntry soi_wait;
+            soi_wait.trigger = TriggerType::ALTITUDE;
+            
+            double target_radius = 1737.4; // Moon radius
+            double safe_altitude = (target_soi * 0.1) - target_radius;
+            if (safe_altitude < 500.0) safe_altitude = 500.0;
+            
+            soi_wait.targetAltKM = safe_altitude; 
+            soi_wait.refBodyID = targets[0].spiceID; 
+            soi_wait.dvx = 0; soi_wait.dvy = 0; soi_wait.dvz = 0;
+            table.push_back(soi_wait);
+        } else {
+            // Fallback to Apsis
+            BurnEntry arr_wait;
+            arr_wait.trigger = TriggerType::APSIS;
+            arr_wait.apsisType = 1; // Periapsis
+            arr_wait.refBodyID = targets[0].spiceID;
+            table.push_back(arr_wait);
+        }
         
         BurnEntry loi;
         loi.trigger = TriggerType::APSIS;
