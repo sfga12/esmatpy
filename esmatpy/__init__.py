@@ -41,15 +41,20 @@ def print_burn_table(burn_table, export_csv_path="mission_plan.csv"):
             trigger_name = "Altitude"
             ops = ["<", "<=", ">=", ">"]
             op_str = ops[burn.altCondition] if 0 <= burn.altCondition < 4 else "<="
-            params = f"{op_str} {burn.targetAltKM:.1f} km"
+            
+            body_map = {399: "EARTH", 301: "MOON", 199: "MERCURY", 299: "VENUS", 499: "MARS", 10: "SUN", 0: "CENT"}
+            body_name = body_map.get(burn.altRefBodyID, str(burn.altRefBodyID))
+            
+            params = f"{body_name} {op_str} {burn.targetAltKM:.0f} km"
         else:
             trigger_name = "Unknown"
             params = ""
             
         frame = 'VNB' if burn.isVNB else 'J2000'
+        ref_body = {399: "EARTH", 301: "MOON", 0: "CENT"}.get(burn.refBodyID, str(burn.refBodyID))
         
-        print(f"[{i+1:02d}] Trigger: {trigger_name:<15} | Params: {params:<15} | dV: ({burn.dvx:8.5f}, {burn.dvy:8.5f}, {burn.dvz:8.5f}) | Ref: {burn.refBodyID:<4} | Frame: {frame}")
-        csv_data.append([i+1, trigger_name, params, f"{burn.dvx:.5f}", f"{burn.dvy:.5f}", f"{burn.dvz:.5f}", f"{total_dv:.5f}", burn.refBodyID, frame])
+        print(f"[{i+1:02d}] Trigger: {trigger_name:<15} | Params: {params:<20} | dV: ({burn.dvx:8.5f}, {burn.dvy:8.5f}, {burn.dvz:8.5f}) | Ref: {ref_body:<5} | Frame: {frame}")
+        csv_data.append([i+1, trigger_name, params, f"{burn.dvx:.5f}", f"{burn.dvy:.5f}", f"{burn.dvz:.5f}", f"{total_dv:.5f}", ref_body, frame])
 
     print(f"{'-'*80}")
     

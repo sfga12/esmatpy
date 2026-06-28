@@ -376,7 +376,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
         if (eps < 0.0) {
             double sma_o = -sc_mu / (2.0 * eps);
             double T_orbit = 2.0 * 3.1415926535 * std::sqrt((sma_o*sma_o*sma_o)/sc_mu);
-            dep_max = (T_orbit / 86400.0) * 2.0;
+            dep_max = (T_orbit / 86400.0) * 1.5;
             dep_step = (T_orbit / 86400.0) / 100.0;
         } else {
             dep_max = 0.0;
@@ -495,13 +495,71 @@ std::vector<BurnEntry> calculate_navigation_plan(
     int tmi_refBodyID = centralBodyIdx;
 
     if (min_dv < 1e8) {
-        // --- VIRTUAL FLIGHT OPTIMIZER (N-Body Correction) ---
         double current_t = base_et + best_dep * 86400.0;
         double tof_sec = best_tof * 86400.0;
-        glm::dvec3 current_r = best_test_r;
-        glm::dvec3 current_v = best_test_v;
+        
+        // Exact N-Body Phase shift for the parking orbit
+        glm::dvec3 current_r = sc.initial_pos;
+        glm::dvec3 current_v = sc.initial_vel;
+        if (best_dep > 0.0) {
+            double wait_sec = best_dep * 86400.0;
+            double t_current = base_et;
+            double h_wait = 10.0;
+            int steps_wait = (int)std::ceil(wait_sec / h_wait);
+            h_wait = wait_sec / steps_wait;
+            
+            // Central body for J2
+            double cBody_J2 = 0.0;
+            double cBody_Radius = 1.0;
+            std::string cBody_Name = "EARTH";
+            for (auto& p : planets) {
+                if (p.SpiceID == sc.initial_center_id) {
+                    cBody_J2 = p.J2;
+                    cBody_Radius = p.RadiusKM;
+                    cBody_Name = p.Name;
+                    break;
+                }
+            }
+            
+            for (int s = 0; s < steps_wait; ++s) {
+                auto get_acc_park = [&](glm::dvec3 p, double et) {
+                    double rm = glm::length(p);
+                    glm::dvec3 a = -sc_mu * p / (rm*rm*rm);
+                    if (cBody_J2 > 1e-9) {
+                        double R_mat[3][3]; std::string iau = "IAU_" + cBody_Name;
+                        for(auto &c: iau) c=toupper(c); pxform_c(iau.c_str(), "J2000", et, R_mat);
+                        glm::dmat3 rot = glm::dmat3(R_mat[0][0],R_mat[1][0],R_mat[2][0],R_mat[0][1],R_mat[1][1],R_mat[2][1],R_mat[0][2],R_mat[1][2],R_mat[2][2]);
+                        glm::dvec3 pl = glm::transpose(rot) * p; double r2=rm*rm; double r5=r2*r2*rm;
+                        double j2f = -1.5*cBody_J2*sc_mu*cBody_Radius*cBody_Radius/r5;
+                        a += rot * glm::dvec3(j2f*pl.x*(1.0-5.0*pl.z*pl.z/r2), j2f*pl.y*(1.0-5.0*pl.z*pl.z/r2), j2f*pl.z*(3.0-5.0*pl.z*pl.z/r2));
+                    }
+                    for (auto& b : planets) {
+                        if (b.SpiceID == sc.initial_center_id) continue;
+                        double stB[6], local_lt; spkgeo_c(b.SpiceID, et, "J2000", sc.initial_center_id, stB, &local_lt);
+                        glm::dvec3 rb(stB[0], stB[1], stB[2]);
+                        glm::dvec3 r_rel = p - rb;
+                        double d_mag = glm::length(r_rel), rb_mag = glm::length(rb);
+                        if (d_mag > 1.0 && rb_mag > 1.0)
+                            a += -b.GM * (r_rel/(d_mag*d_mag*d_mag) + rb/(rb_mag*rb_mag*rb_mag));
+                    }
+                    return a;
+                };
+                
+                glm::dvec3 k1v=get_acc_park(current_r, t_current), k1r=current_v;
+                glm::dvec3 k2v=get_acc_park(current_r+k1r*(h_wait/2.0), t_current+h_wait/2.0), k2r=current_v+k1v*(h_wait/2.0);
+                glm::dvec3 k3v=get_acc_park(current_r+k2r*(h_wait/2.0), t_current+h_wait/2.0), k3r=current_v+k2v*(h_wait/2.0);
+                glm::dvec3 k4v=get_acc_park(current_r+k3r*h_wait, t_current+h_wait), k4r=current_v+k3v*h_wait;
+                current_v += (h_wait/6.0)*(k1v+2.0*k2v+2.0*k3v+k4v);
+                current_r += (h_wait/6.0)*(k1r+2.0*k2r+2.0*k3r+k4r);
+                t_current += h_wait;
+            }
+        }
+        
+        // Re-solve lambert with the exact Phase-Shifted state for inertial Delta-V baseline
         glm::dvec3 target_pos_center = best_target_r;
         glm::dvec3 target_v = best_target_v;
+        LambertResult final_lam = SolveLambert(current_r, target_pos_center, tof_sec, mu, centralBodyIdx, true);
+        if (!final_lam.success) final_lam = best_lam; // fallback
         
         double target_gm = GetBodyGM(targets[0].spiceID);
         double target_radius = GetBodyRadius(targets[0].spiceID);
@@ -522,7 +580,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
         glm::dvec3 N = (glm::length(cross_rv) > 1e-10) ? glm::normalize(cross_rv) : glm::dvec3(0, 0, 1);
         glm::dvec3 B = glm::cross(V, N);
 
-        glm::dvec3 dv_inertial = best_lam.v1 - current_v;
+        glm::dvec3 dv_inertial = final_lam.v1 - current_v;
         double dv_v = glm::dot(dv_inertial, V);
         double dv_n = glm::dot(dv_inertial, N);
         double dv_b = glm::dot(dv_inertial, B);
@@ -565,6 +623,28 @@ std::vector<BurnEntry> calculate_navigation_plan(
                         if (d_mag > 1.0 && rb_mag > 1.0)
                             a += -b.GM * (r_rel/(d_mag*d_mag*d_mag) + rb/(rb_mag*rb_mag*rb_mag));
                     }
+                    
+                    // J2 Perturbation
+                    double cBody_J2 = 0.0;
+                    double cBody_Radius = 1.0;
+                    std::string cBody_Name = "EARTH";
+                    for (auto& b : planets) {
+                        if (b.SpiceID == centralBodyIdx) {
+                            cBody_J2 = b.J2;
+                            cBody_Radius = b.RadiusKM;
+                            cBody_Name = b.Name;
+                            break;
+                        }
+                    }
+                    if (cBody_J2 > 1e-9) {
+                        double R_mat[3][3]; std::string iau = "IAU_" + cBody_Name;
+                        for(auto &c: iau) c=toupper(c); pxform_c(iau.c_str(), "J2000", et, R_mat);
+                        glm::dmat3 rot = glm::dmat3(R_mat[0][0],R_mat[1][0],R_mat[2][0],R_mat[0][1],R_mat[1][1],R_mat[2][1],R_mat[0][2],R_mat[1][2],R_mat[2][2]);
+                        glm::dvec3 pl = glm::transpose(rot) * p; double r2=rm*rm; double r5=r2*r2*rm;
+                        double j2f = -1.5*cBody_J2*mu*cBody_Radius*cBody_Radius/r5;
+                        a += rot * glm::dvec3(j2f*pl.x*(1.0-5.0*pl.z*pl.z/r2), j2f*pl.y*(1.0-5.0*pl.z*pl.z/r2), j2f*pl.z*(3.0-5.0*pl.z*pl.z/r2));
+                    }
+                    
                     return a;
                 };
 
@@ -634,13 +714,14 @@ std::vector<BurnEntry> calculate_navigation_plan(
             BurnEntry soi_wait;
             soi_wait.trigger = TriggerType::ALTITUDE;
             soi_wait.altCondition = 1; // <=
+            soi_wait.altRefBodyID = targets[0].spiceID;
             
             double target_radius = 1737.4; // Moon radius
             double safe_altitude = (target_soi * 0.1) - target_radius;
             if (safe_altitude < 500.0) safe_altitude = 500.0;
             
             soi_wait.targetAltKM = safe_altitude; 
-            soi_wait.refBodyID = targets[0].spiceID; 
+            soi_wait.refBodyID = 0; // Coast
             soi_wait.dvx = 0; soi_wait.dvy = 0; soi_wait.dvz = 0;
             table.push_back(soi_wait);
         } else {
@@ -713,6 +794,7 @@ PYBIND11_MODULE(core, m) {
         .def_readwrite("apsisType", &BurnEntry::apsisType)
         .def_readwrite("targetAltKM", &BurnEntry::targetAltKM)
         .def_readwrite("altCondition", &BurnEntry::altCondition)
+        .def_readwrite("altRefBodyID", &BurnEntry::altRefBodyID)
         .def_readwrite("dvx", &BurnEntry::dvx)
         .def_readwrite("dvy", &BurnEntry::dvy)
         .def_readwrite("dvz", &BurnEntry::dvz)
