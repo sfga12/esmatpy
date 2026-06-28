@@ -583,6 +583,17 @@ std::vector<BurnEntry> calculate_navigation_plan(
             }
         }
         
+        // CRITICAL: Convert from parking orbit frame (sc.initial_center_id)
+        // to central body frame (centralBodyIdx) before Lambert and Virtual Pilot.
+        // For interplanetary (e.g., Earth→Mars), centralBodyIdx=10 (Sun),
+        // but dep wait was integrated in Earth-centered frame.
+        if (sc.initial_center_id != centralBodyIdx) {
+            double stC[6], lt_c;
+            spkgeo_c(sc.initial_center_id, current_t, "J2000", centralBodyIdx, stC, &lt_c);
+            current_r += glm::dvec3(stC[0], stC[1], stC[2]);
+            current_v += glm::dvec3(stC[3], stC[4], stC[5]);
+        }
+
         // Re-solve lambert with the exact Phase-Shifted state for inertial Delta-V baseline
         glm::dvec3 target_pos_center = best_target_r;
         glm::dvec3 target_v = best_target_v;
@@ -776,7 +787,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
             // Hill Sphere / SOI: r_SOI = d * (GM_target / GM_parent)^(2/5)
             if (d_p > 1.0) {
                 target_soi = d_p * std::pow(target_gm / parentGM, 0.4);
-                py::print("[SOI] Target:", targets[0].spiceID, "| d_p:", (int)d_p, "km | GM_parent:", (int)parentGM, "km3/s2 | SOI:", (int)target_soi, "km", py::arg("flush")=true);
+                py::print("[SOI] Target:", targets[0].spiceID, "| d_p:", (long long)d_p, "km | GM_parent:", (long long)parentGM, "km3/s2 | SOI:", (long long)target_soi, "km", py::arg("flush")=true);
             }
         }
         
