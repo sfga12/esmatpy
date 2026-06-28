@@ -498,6 +498,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
     // Hoisted for LOI calculation (scope outside if block)
     LambertResult final_lam; final_lam.success = false;
     glm::dvec3 loi_target_v(0.0, 0.0, 0.0);
+    double actual_peri_v = 0.0; // Hoisted for LOI calculation
 
     if (min_dv < 1e8) {
         double current_t = base_et + best_dep * 86400.0;
@@ -603,7 +604,6 @@ std::vector<BurnEntry> calculate_navigation_plan(
         printf("[NAV-DBG] Target pos (CB frame): X=%d Y=%d Z=%d km\n", (int)target_pos_center.x, (int)target_pos_center.y, (int)target_pos_center.z);
         printf("[NAV-DBG] Dep pos (CB frame): X=%d Y=%d Z=%d km | |v|=%f\n", (int)current_r.x, (int)current_r.y, (int)current_r.z, glm::length(current_v));
 
-        double actual_peri_v = 0.0;
         double r_peri_target = target_radius + targets[0].targetAltKm;
         
         auto runVirtualFlight = [&](double dvv, double dvn, double dvb, double& out_v) {
@@ -716,7 +716,9 @@ std::vector<BurnEntry> calculate_navigation_plan(
         // VNB convention: X=Velocity(prograde), Y=Normal(orbit-normal), Z=Binormal(radial)
         tmi_isVNB = true;
         tmi_refBodyID = vnbRefSpice;
-        dv_vec = glm::dvec3(dv_v, dv_n, dv_b);  // FIXED: correct VNB order (V, N, B)
+        dv_vec = glm::dvec3(dv_v, dv_b, dv_n); // Match ESMAT.exe mapping (v, b, n)
+        tmi_isVNB = true;
+        tmi_refBodyID = vnbRefSpice;
     }
     
     tmi.dvx = dv_vec.x;
@@ -731,9 +733,15 @@ std::vector<BurnEntry> calculate_navigation_plan(
         double target_soi = -1.0;
         double parentGM = 398600.435507; // Assuming Earth as parent for now
         
-        // Simple SOI estimation for Moon relative to Earth
+        // Match C++ exactly for SOI calculation using true distance at base_et
         if (targets[0].spiceID == 301) {
-            double d_p = 384400.0; // Approx Earth-Moon distance
+            double d_p = 384400.0;
+            double stEarth[6], stMoon[6], ltE, ltM;
+            spkgeo_c(399, base_et, "J2000", 10, stEarth, &ltE);
+            spkgeo_c(301, base_et, "J2000", 10, stMoon, &ltM);
+            glm::dvec3 r_earth(stEarth[0], stEarth[1], stEarth[2]);
+            glm::dvec3 r_moon(stMoon[0], stMoon[1], stMoon[2]);
+            d_p = glm::length(r_moon - r_earth);
             target_soi = d_p * std::pow(target_gm / parentGM, 0.4);
         }
         
@@ -743,7 +751,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
             soi_wait.altCondition = 1; // <=
             soi_wait.altRefBodyID = targets[0].spiceID;
             
-            double target_radius = 1737.4; // Moon radius
+            double target_radius = GetBodyRadius(targets[0].spiceID);
             double safe_altitude = (target_soi * 0.1) - target_radius;
             if (safe_altitude < 500.0) safe_altitude = 500.0;
             
@@ -764,13 +772,10 @@ std::vector<BurnEntry> calculate_navigation_plan(
         loi.trigger = TriggerType::APSIS;
         loi.apsisType = 1; 
         
-        // Use final_lam.v2 (phase-corrected Lambert) for accurate LOI dv calculation
-        glm::dvec3 v_inf_vec_opt = final_lam.v2 - loi_target_v;
-        double v_inf_sq_opt = glm::dot(v_inf_vec_opt, v_inf_vec_opt);
+        // Use Virtual Pilot's periapsis velocity for precise insertion
         double r_peri_opt = target_r + targets[0].targetAltKm;
-        double v_actual_opt = std::sqrt(v_inf_sq_opt + 2.0 * target_gm / r_peri_opt);
         double v_circ_opt   = std::sqrt(target_gm / r_peri_opt);
-        double dv2 = std::abs(v_actual_opt - v_circ_opt);
+        double dv2 = actual_peri_v - v_circ_opt; // Bugfix 2: match ESMAT.exe logic
         
         loi.dvx = -dv2; loi.dvy = 0; loi.dvz = 0; 
         loi.isVNB = true;
