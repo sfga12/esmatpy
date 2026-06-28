@@ -686,7 +686,19 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 double d_to_target = glm::length(r - r_tgt);
 
                 double actual_h = h_base;
-                if (d_to_target < r_peri_target * 5.0) actual_h = std::min(h_base, 10.0);
+                
+                // Dynamic time stepping: slow down near ANY planet to correctly integrate gravity wells
+                for (auto& b : planets) {
+                    double stB[6], local_lt; spkgeo_c(b.SpiceID, t, "J2000", centralBodyIdx, stB, &local_lt);
+                    glm::dvec3 rb(stB[0], stB[1], stB[2]);
+                    double d_mag = glm::length(r - rb);
+                    if (d_mag < b.RadiusKM * 50.0) { // e.g., 300,000 km for Earth
+                        double local_h = std::max(1.0, (d_mag / b.RadiusKM) * 2.0); // 2s near surface, scales up
+                        actual_h = std::min(actual_h, local_h);
+                    }
+                }
+                
+                if (d_to_target < r_peri_target * 5.0) actual_h = std::min(actual_h, 10.0);
                 if (elapsed_t + actual_h > flight_duration) actual_h = flight_duration - elapsed_t;
                 if (actual_h < 1e-6) break;
 
