@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 import esmatpy.core as esmat
 
 # Kernels
-kernel_dir = r"../datas"
+kernel_dir = r"data/kernels"
 esmat.load_kernel(f"{kernel_dir}/de440.bsp")
 esmat.load_kernel(f"{kernel_dir}/naif0012.tls")
 esmat.load_kernel(f"{kernel_dir}/pck00011.tpc")

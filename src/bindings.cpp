@@ -376,7 +376,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
         if (eps < 0.0) {
             double sma_o = -sc_mu / (2.0 * eps);
             double T_orbit = 2.0 * 3.1415926535 * std::sqrt((sma_o*sma_o*sma_o)/sc_mu);
-            dep_max = (T_orbit / 86400.0) * 1.5;
+            dep_max = (T_orbit / 86400.0) * 2.0;
             dep_step = (T_orbit / 86400.0) / 100.0;
         } else {
             dep_max = 0.0;
@@ -614,6 +614,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 auto get_acc = [&](glm::dvec3 p, double et) {
                     double rm = glm::length(p);
                     glm::dvec3 a = -mu * p / (rm*rm*rm);
+                    
+
                     for (auto& b : planets) {
                         if (b.SpiceID == centralBodyIdx) continue;
                         double stB[6], local_lt; spkgeo_c(b.SpiceID, et, "J2000", centralBodyIdx, stB, &local_lt);
@@ -666,9 +668,16 @@ std::vector<BurnEntry> calculate_navigation_plan(
         };
 
         double trash_v;
+        double last_dist = 0;
         for (int iter = 0; iter < 12; ++iter) {
             double d0 = runVirtualFlight(dv_v, dv_n, dv_b, actual_peri_v);
+            last_dist = d0;
             double err = d0 - r_peri_target;
+            
+            if (targets[0].objective == MissionObjective::Impact && d0 <= r_peri_target) {
+                py::print("[PILOT] Iter", iter, ": IMPACT at", (int)d0, "km from center - surface confirmed.");
+                break;
+            }
             if (std::abs(err) < 0.1) break;
 
             double eps = 1e-4;
@@ -684,7 +693,9 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 double adj_n = std::clamp(step * ddn, -max_adj, max_adj); dv_n -= adj_n * 0.8;
                 double adj_b = std::clamp(step * ddb, -max_adj, max_adj); dv_b -= adj_b * 0.8;
             }
+            py::print("[PILOT] Iter", iter, ": Periapsis=", (int)d0, "km (Err:", (int)err, "km)");
         }
+        py::print("[NAV] Virtual Pilot Converged at", (int)last_dist, "km radius.");
         
         // Final Output as VNB
         tmi_isVNB = true;
