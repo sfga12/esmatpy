@@ -629,7 +629,28 @@ std::vector<BurnEntry> calculate_navigation_plan(
         glm::dvec3 N = (glm::length(cross_rv) > 1e-10) ? glm::normalize(cross_rv) : glm::dvec3(0, 0, 1);
         glm::dvec3 B = glm::cross(V, N);
 
-        glm::dvec3 dv_inertial = final_lam.v1 - current_v;
+        glm::dvec3 dv_inertial;
+        if (sc.initial_center_id != centralBodyIdx) {
+            // Interplanetary: We must escape the parking orbit's gravity well (Oberth effect).
+            // final_lam.v1 is the heliocentric velocity required.
+            double stC[6], lt;
+            spkgeo_c(sc.initial_center_id, current_t, "J2000", centralBodyIdx, stC, &lt);
+            glm::dvec3 v_planet(stC[3], stC[4], stC[5]);
+            
+            glm::dvec3 v_inf = final_lam.v1 - v_planet;
+            double v_inf_mag = glm::length(v_inf);
+            double v_esc = std::sqrt(2.0 * sc_mu / glm::length(r_rel_vp));
+            double v_p = std::sqrt(v_inf_mag * v_inf_mag + v_esc * v_esc);
+            
+            // Starting guess: purely prograde escape.
+            // Pilot will adjust N and B to perfectly hit the target.
+            glm::dvec3 required_v = V * v_p;
+            dv_inertial = required_v - v_rel_vp;
+        } else {
+            // Local transfer (e.g., Earth -> Moon)
+            dv_inertial = final_lam.v1 - current_v;
+        }
+        
         double dv_v = glm::dot(dv_inertial, V);
         double dv_n = glm::dot(dv_inertial, N);
         double dv_b = glm::dot(dv_inertial, B);
