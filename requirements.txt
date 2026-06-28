@@ -1,5 +1,1 @@
-requests
-xarray
-netCDF4
-numpy
-pandas
+pybind11
