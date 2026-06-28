@@ -29,7 +29,6 @@ struct BurnEntry {
     double dvx = 0, dvy = 0, dvz = 0;       
     int refBodyID = 0;              
     bool isVNB = false;                 
-    bool isDynamicCircularize = false;
     bool enabled = true;
 };
 
@@ -503,7 +502,6 @@ std::vector<BurnEntry> calculate_navigation_plan(
         wait1.get_s = sec - wait1.get_h * 3600.0 - wait1.get_m * 60.0;
         wait1.dvx = 0; wait1.dvy = 0; wait1.dvz = 0;
         wait1.isVNB = false;
-        wait1.isDynamicCircularize = false;
         wait1.refBodyID = sc.initial_center_id;
         table.push_back(wait1);
     }
@@ -725,25 +723,49 @@ std::vector<BurnEntry> calculate_navigation_plan(
                             a += -b.GM * (r_rel/(d_mag*d_mag*d_mag) + rb/(rb_mag*rb_mag*rb_mag));
                     }
                     
-                    // J2 Perturbation
-                    double cBody_J2 = 0.0;
-                    double cBody_Radius = 1.0;
-                    std::string cBody_Name = "EARTH";
+                    // J2 Perturbation for ALL bodies (matching ESMAT.exe Spacecraft::computeAcceleration)
                     for (auto& b : planets) {
-                        if (b.SpiceID == centralBodyIdx) {
-                            cBody_J2 = b.J2;
-                            cBody_Radius = b.RadiusKM;
-                            cBody_Name = b.Name;
-                            break;
+                        if (b.J2 > 1e-9) {
+                            glm::dvec3 r_sc_from_body;
+                            glm::dvec3 r_cb_from_body;
+                            
+                            if (b.SpiceID == centralBodyIdx) {
+                                r_sc_from_body = -p;
+                                r_cb_from_body = glm::dvec3(0.0);
+                            } else {
+                                double stB[6], lt; spkgeo_c(b.SpiceID, et, "J2000", centralBodyIdx, stB, &lt);
+                                glm::dvec3 rb(stB[0], stB[1], stB[2]);
+                                r_sc_from_body = -(p - rb);
+                                r_cb_from_body = rb; // rb is b relative to center. so center relative to b is -rb. Wait, in ESMAT: rCenter = body - center. r_cb_from_body = -rCenter = -(b - center) = center - b. Since rb is b - center, -rb is center - b. Yes, -rb.
+                                r_cb_from_body = -rb;
+                            }
+                            
+                            double R_mat[3][3]; std::string iau = "IAU_" + b.Name;
+                            for(auto &c: iau) c=toupper(c); pxform_c(iau.c_str(), "J2000", et, R_mat);
+                            glm::dmat3 R_body = glm::dmat3(R_mat[0][0],R_mat[1][0],R_mat[2][0],R_mat[0][1],R_mat[1][1],R_mat[2][1],R_mat[0][2],R_mat[1][2],R_mat[2][2]);
+                            glm::dmat3 R_body_inv = glm::transpose(R_body);
+                            
+                            auto apply_j2 = [&](glm::dvec3 r_from_b, double d_mag) {
+                                if (d_mag < 1.0) return glm::dvec3(0.0);
+                                glm::dvec3 r_local = R_body_inv * r_from_b;
+                                double x = r_local.x; double y = r_local.y; double z = r_local.z;
+                                double r2 = d_mag * d_mag; double z2_over_r2 = (z * z) / r2;
+                                double R_eq = b.RadiusKM;
+                                double j2_factor = -1.5 * b.J2 * b.GM * R_eq * R_eq / (r2 * r2 * d_mag);
+                                glm::dvec3 aJ2_local(j2_factor * x * (1.0 - 5.0 * z2_over_r2),
+                                                     j2_factor * y * (1.0 - 5.0 * z2_over_r2),
+                                                     j2_factor * z * (3.0 - 5.0 * z2_over_r2));
+                                return R_body * aJ2_local;
+                            };
+                            
+                            double dSC = glm::length(r_sc_from_body);
+                            a += apply_j2(r_sc_from_body, dSC);
+                            
+                            if (b.SpiceID != centralBodyIdx) {
+                                double dCB = glm::length(r_cb_from_body);
+                                a -= apply_j2(r_cb_from_body, dCB);
+                            }
                         }
-                    }
-                    if (cBody_J2 > 1e-9) {
-                        double R_mat[3][3]; std::string iau = "IAU_" + cBody_Name;
-                        for(auto &c: iau) c=toupper(c); pxform_c(iau.c_str(), "J2000", et, R_mat);
-                        glm::dmat3 rot = glm::dmat3(R_mat[0][0],R_mat[1][0],R_mat[2][0],R_mat[0][1],R_mat[1][1],R_mat[2][1],R_mat[0][2],R_mat[1][2],R_mat[2][2]);
-                        glm::dvec3 pl = glm::transpose(rot) * p; double r2=rm*rm; double r5=r2*r2*rm;
-                        double j2f = -1.5*cBody_J2*mu*cBody_Radius*cBody_Radius/r5;
-                        a += rot * glm::dvec3(j2f*pl.x*(1.0-5.0*pl.z*pl.z/r2), j2f*pl.y*(1.0-5.0*pl.z*pl.z/r2), j2f*pl.z*(3.0-5.0*pl.z*pl.z/r2));
                     }
                     
                     return a;
@@ -814,7 +836,6 @@ std::vector<BurnEntry> calculate_navigation_plan(
     tmi.dvy = dv_vec.y;
     tmi.dvz = dv_vec.z;
     tmi.isVNB = tmi_isVNB;
-    tmi.isDynamicCircularize = false;
     tmi.refBodyID = tmi_refBodyID;
     table.push_back(tmi);
     
@@ -852,7 +873,6 @@ std::vector<BurnEntry> calculate_navigation_plan(
             soi_wait.targetAltKM = safe_altitude; 
             soi_wait.refBodyID = 0; // Coast
             soi_wait.dvx = 0; soi_wait.dvy = 0; soi_wait.dvz = 0;
-            soi_wait.isDynamicCircularize = false;
             table.push_back(soi_wait);
         } else {
             // Fallback to Apsis
@@ -872,9 +892,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
         double v_circ_opt   = std::sqrt(target_gm / r_peri_opt);
         double dv2 = actual_peri_v - v_circ_opt; // Bugfix 2: match ESMAT.exe logic
         
-        loi.dvx = 0.0; loi.dvy = 0; loi.dvz = 0; 
+        loi.dvx = -dv2; loi.dvy = 0; loi.dvz = 0; 
         loi.isVNB = true;
-        loi.isDynamicCircularize = true;
         loi.refBodyID = targets[0].spiceID;
         table.push_back(loi);
     } else if (targets[0].objective == MissionObjective::Flyby) {
@@ -931,7 +950,6 @@ PYBIND11_MODULE(core, m) {
         .def_readwrite("dvy", &BurnEntry::dvy)
         .def_readwrite("dvz", &BurnEntry::dvz)
         .def_readwrite("isVNB", &BurnEntry::isVNB)
-        .def_readwrite("isDynamicCircularize", &BurnEntry::isDynamicCircularize)
         .def_readwrite("refBodyID", &BurnEntry::refBodyID)
         .def("__repr__", [](const BurnEntry &b) {
             std::string s = "<BurnEntry trigger=";
