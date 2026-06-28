@@ -487,7 +487,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
     
     BurnEntry tmi;
     tmi.trigger = TriggerType::GET; 
-    double total_sec = (initial_delay_days + best_dep) * 86400.0;
+    // Cast to float first to match ESMAT.exe's UI precision truncation
+    double total_sec = ((float)initial_delay_days + (float)best_dep) * 86400.0;
     tmi.get_h = std::floor(total_sec / 3600.0);
     tmi.get_m = std::floor((total_sec - tmi.get_h * 3600.0) / 60.0);
     tmi.get_s = total_sec - tmi.get_h * 3600.0 - tmi.get_m * 60.0;
@@ -501,14 +502,14 @@ std::vector<BurnEntry> calculate_navigation_plan(
     double actual_peri_v = 0.0; // Hoisted for LOI calculation
 
     if (min_dv < 1e8) {
-        double current_t = base_et + best_dep * 86400.0;
-        double tof_sec = best_tof * 86400.0;
+        double current_t = base_et + (float)best_dep * 86400.0;
+        double tof_sec = (float)best_tof * 86400.0;
         
         // Exact N-Body Phase shift for the parking orbit
         glm::dvec3 current_r = sc.initial_pos;
         glm::dvec3 current_v = sc.initial_vel;
         if (best_dep > 0.0) {
-            double wait_sec = best_dep * 86400.0;
+            double wait_sec = (float)best_dep * 86400.0;
             double t_current = base_et;
             double h_wait = 10.0;
             int steps_wait = (int)std::ceil(wait_sec / h_wait);
@@ -565,7 +566,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
         glm::dvec3 target_pos_center = best_target_r;
         glm::dvec3 target_v = best_target_v;
         // Re-query target state at arrival time for the final lambert (more accurate)
-        double arr_et_final = base_et + best_dep * 86400.0 + best_tof * 86400.0;
+        double arr_et_final = base_et + (float)best_dep * 86400.0 + (float)best_tof * 86400.0;
         {
             double stTfinal[6], lt_f;
             spkgeo_c(targets[0].spiceID, arr_et_final, "J2000", centralBodyIdx, stTfinal, &lt_f);
