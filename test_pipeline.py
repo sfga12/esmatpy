@@ -60,7 +60,9 @@ for i, burn in enumerate(burn_table):
         params = "Apoapsis" if burn.apsisType == 0 else "Periapsis"
     elif burn.trigger == esmat.TriggerType.ALTITUDE:
         trigger_name = "Altitude"
-        params = f"<= {burn.targetAltKM:.1f} km"
+        ops = ["<", "<=", ">=", ">"]
+        op_str = ops[burn.altCondition] if 0 <= burn.altCondition < 4 else "<="
+        params = f"{op_str} {burn.targetAltKM:.1f} km"
         
     frame = 'VNB' if burn.isVNB else 'J2000'
     print(f"[{i+1}] Trigger: {trigger_name} | Params: {params} | dV: ({burn.dvx:.5f}, {burn.dvy:.5f}, {burn.dvz:.5f}) | Ref: {burn.refBodyID} | Frame: {frame}")

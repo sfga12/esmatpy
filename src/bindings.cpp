@@ -633,6 +633,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
         if (target_soi > 0) {
             BurnEntry soi_wait;
             soi_wait.trigger = TriggerType::ALTITUDE;
+            soi_wait.altCondition = 1; // <=
             
             double target_radius = 1737.4; // Moon radius
             double safe_altitude = (target_soi * 0.1) - target_radius;
@@ -711,6 +712,7 @@ PYBIND11_MODULE(core, m) {
         .def_readwrite("get_s", &BurnEntry::get_s)
         .def_readwrite("apsisType", &BurnEntry::apsisType)
         .def_readwrite("targetAltKM", &BurnEntry::targetAltKM)
+        .def_readwrite("altCondition", &BurnEntry::altCondition)
         .def_readwrite("dvx", &BurnEntry::dvx)
         .def_readwrite("dvy", &BurnEntry::dvy)
         .def_readwrite("dvz", &BurnEntry::dvz)
