@@ -747,7 +747,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
 
         double trash_v;
         double last_dist = 0;
-        for (int iter = 0; iter < 12; ++iter) {
+        int max_iters = (sc.initial_center_id != centralBodyIdx) ? 30 : 12;
+        for (int iter = 0; iter < max_iters; ++iter) {
             double d0 = runVirtualFlight(dv_v, dv_n, dv_b, actual_peri_v);
             last_dist = d0;
             double err = d0 - r_peri_target;
@@ -766,7 +767,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
             double grad_mag = ddv*ddv + ddn*ddn + ddb*ddb;
             if (grad_mag > 1e-18) {
                 double step = err / grad_mag;
-                double max_adj = 0.5; 
+                double max_adj = (sc.initial_center_id != centralBodyIdx) ? 1.5 : 0.5; 
                 double adj_v = std::clamp(step * ddv, -max_adj, max_adj); dv_v -= adj_v * 0.8;
                 double adj_n = std::clamp(step * ddn, -max_adj, max_adj); dv_n -= adj_n * 0.8;
                 double adj_b = std::clamp(step * ddb, -max_adj, max_adj); dv_b -= adj_b * 0.8;
