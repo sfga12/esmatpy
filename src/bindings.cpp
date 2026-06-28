@@ -677,6 +677,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
             double h_base = std::clamp(flight_duration / 5000.0, 1.0, 3600.0);
             double elapsed_t = 0.0;
             double min_dist = 1e18; 
+            bool collision_detected = false;
             
             while (elapsed_t < flight_duration) {
                 double stT[6], lt; spkgeo_c(targets[0].spiceID, t, "J2000", centralBodyIdx, stT, &lt);
@@ -700,6 +701,12 @@ std::vector<BurnEntry> calculate_navigation_plan(
                         glm::dvec3 rb(stB[0], stB[1], stB[2]);
                         glm::dvec3 r_rel = p - rb;
                         double d_mag = glm::length(r_rel), rb_mag = glm::length(rb);
+                        
+                        // Collision check
+                        if (d_mag < b.RadiusKM) {
+                            collision_detected = true;
+                        }
+
                         if (d_mag > 1.0 && rb_mag > 1.0)
                             a += -b.GM * (r_rel/(d_mag*d_mag*d_mag) + rb/(rb_mag*rb_mag*rb_mag));
                     }
@@ -740,6 +747,10 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 if (d_post < min_dist) {
                     min_dist = d_post;
                     out_v = glm::length(v - v_tgt);
+                }
+                
+                if (collision_detected) {
+                    return 1e9; // Massive penalty for crashing into a planet
                 }
             }
             return min_dist;
