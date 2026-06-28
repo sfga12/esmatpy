@@ -740,19 +740,23 @@ std::vector<BurnEntry> calculate_navigation_plan(
     
     // Arrival
     if (targets[0].objective == MissionObjective::OrbitInsertion) {
+        // Dynamic SOI: no hardcoded values.
+        // centralBodyIdx is already set correctly (399 for Earth-Moon, 10 for interplanetary).
+        // parentGM = GM of the body the target orbits = cruise center body.
+        double parentGM = GetBodyGM(centralBodyIdx);
         double target_soi = -1.0;
-        double parentGM = 398600.435507; // Assuming Earth as parent for now
         
-        // Match C++ exactly for SOI calculation using true distance at base_et
-        if (targets[0].spiceID == 301) {
-            double d_p = 384400.0;
-            double stEarth[6], stMoon[6], ltE, ltM;
-            spkgeo_c(399, base_et, "J2000", 10, stEarth, &ltE);
-            spkgeo_c(301, base_et, "J2000", 10, stMoon, &ltM);
-            glm::dvec3 r_earth(stEarth[0], stEarth[1], stEarth[2]);
-            glm::dvec3 r_moon(stMoon[0], stMoon[1], stMoon[2]);
-            d_p = glm::length(r_moon - r_earth);
-            target_soi = d_p * std::pow(target_gm / parentGM, 0.4);
+        if (parentGM > 0.0) {
+            // Get target position relative to its parent (centralBodyIdx) via SPICE
+            double stTgt[6], lt_tgt;
+            spkgeo_c(targets[0].spiceID, base_et, "J2000", centralBodyIdx, stTgt, &lt_tgt);
+            double d_p = glm::length(glm::dvec3(stTgt[0], stTgt[1], stTgt[2]));
+            
+            // Hill Sphere / SOI: r_SOI = d * (GM_target / GM_parent)^(2/5)
+            if (d_p > 1.0) {
+                target_soi = d_p * std::pow(target_gm / parentGM, 0.4);
+                py::print("[SOI] Target:", targets[0].spiceID, "| d_p:", (int)d_p, "km | GM_parent:", (int)parentGM, "km3/s2 | SOI:", (int)target_soi, "km", py::arg("flush")=true);
+            }
         }
         
         if (target_soi > 0) {
