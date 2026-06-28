@@ -495,6 +495,9 @@ std::vector<BurnEntry> calculate_navigation_plan(
     glm::dvec3 dv_vec;
     bool tmi_isVNB = false;
     int tmi_refBodyID = centralBodyIdx;
+    // Hoisted for LOI calculation (scope outside if block)
+    LambertResult final_lam; final_lam.success = false;
+    glm::dvec3 loi_target_v(0.0, 0.0, 0.0);
 
     if (min_dv < 1e8) {
         double current_t = base_et + best_dep * 86400.0;
@@ -560,8 +563,18 @@ std::vector<BurnEntry> calculate_navigation_plan(
         // Re-solve lambert with the exact Phase-Shifted state for inertial Delta-V baseline
         glm::dvec3 target_pos_center = best_target_r;
         glm::dvec3 target_v = best_target_v;
-        LambertResult final_lam = SolveLambert(current_r, target_pos_center, tof_sec, mu, centralBodyIdx, true);
-        if (!final_lam.success) final_lam = best_lam; // fallback
+        // Re-query target state at arrival time for the final lambert (more accurate)
+        double arr_et_final = base_et + best_dep * 86400.0 + best_tof * 86400.0;
+        {
+            double stTfinal[6], lt_f;
+            spkgeo_c(targets[0].spiceID, arr_et_final, "J2000", centralBodyIdx, stTfinal, &lt_f);
+            target_pos_center = glm::dvec3(stTfinal[0], stTfinal[1], stTfinal[2]);
+            target_v = glm::dvec3(stTfinal[3], stTfinal[4], stTfinal[5]);
+        }
+        LambertResult final_lam_inner = SolveLambert(current_r, target_pos_center, tof_sec, mu, centralBodyIdx, true);
+        if (!final_lam_inner.success) final_lam_inner = best_lam; // fallback
+        final_lam = final_lam_inner;  // expose to outer scope for LOI
+        loi_target_v = target_v;      // expose arrival velocity to outer scope
         
         double target_gm = GetBodyGM(targets[0].spiceID);
         double target_radius = GetBodyRadius(targets[0].spiceID);
@@ -697,12 +710,13 @@ std::vector<BurnEntry> calculate_navigation_plan(
             }
             py::print("[PILOT] Iter", iter, ": Periapsis=", (int)d0, "km (Err:", (int)err, "km)");
         }
-        py::print("[NAV] Virtual Pilot Converged at", (int)last_dist, "km radius.");
+        py::print("[NAV] Virtual Pilot Converged at", (int)last_dist, "km radius (altitude:", (int)(last_dist - target_radius), "km).");
         
         // Final Output as VNB
+        // VNB convention: X=Velocity(prograde), Y=Normal(orbit-normal), Z=Binormal(radial)
         tmi_isVNB = true;
         tmi_refBodyID = vnbRefSpice;
-        dv_vec = glm::dvec3(dv_v, dv_b, dv_n); 
+        dv_vec = glm::dvec3(dv_v, dv_n, dv_b);  // FIXED: correct VNB order (V, N, B)
     }
     
     tmi.dvx = dv_vec.x;
@@ -750,7 +764,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
         loi.trigger = TriggerType::APSIS;
         loi.apsisType = 1; 
         
-        glm::dvec3 v_inf_vec_opt = best_lam.v2 - best_target_v;
+        // Use final_lam.v2 (phase-corrected Lambert) for accurate LOI dv calculation
+        glm::dvec3 v_inf_vec_opt = final_lam.v2 - loi_target_v;
         double v_inf_sq_opt = glm::dot(v_inf_vec_opt, v_inf_vec_opt);
         double r_peri_opt = target_r + targets[0].targetAltKm;
         double v_actual_opt = std::sqrt(v_inf_sq_opt + 2.0 * target_gm / r_peri_opt);
