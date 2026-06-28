@@ -465,7 +465,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
                     best_test_r = test_r;
                     best_target_v = target_v;
                     best_target_r = target_pos_center;
-                    py::print("Iteration: Better route found! -> Delay:", dep, "days, Flight:", tof_d, "days | Total dV:", min_dv, "km/s", py::arg("flush")=true);
+                    py::print("[GRID-SEARCH] New Minima -> T_dep: ", dep, " d, TOF: ", tof_d, " d | dV_tot: ", min_dv, " km/s", py::arg("flush")=true);
                 }
             }
         }
