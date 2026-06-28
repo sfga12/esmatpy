@@ -434,7 +434,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
         // TOF search range and step are fully derived from Hohmann TOF
         double search_tof_min = hohmann_tof_days * 0.4;
         double search_tof_max = hohmann_tof_days * 1.5;
-        tof_step = (search_tof_max - search_tof_min) / N_TOF;
+        double tof_step = (search_tof_max - search_tof_min) / N_TOF;
 
         for (double tof_d = search_tof_min; tof_d <= search_tof_max; tof_d += tof_step) {
             double arrET = testET + tof_d * 86400.0;
