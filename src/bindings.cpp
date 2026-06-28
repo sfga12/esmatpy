@@ -391,67 +391,15 @@ std::vector<BurnEntry> calculate_navigation_plan(
 
     glm::dvec3 park_r = sc.initial_pos;
     glm::dvec3 park_v = sc.initial_vel;
-    double park_t = base_et;
-    double last_dep_days = 0.0;
     
-    auto step_parking = [&](double target_dt_days) {
-        double target_dt = target_dt_days * 86400.0;
-        double elapsed_t = 0.0;
-        double h_base = 10.0;
-        while (elapsed_t < target_dt) {
-            double actual_h = std::min(h_base, target_dt - elapsed_t);
-            if (actual_h < 1e-6) break;
-            auto get_acc_park = [&](glm::dvec3 p, double et) {
-                double rm = glm::length(p);
-                glm::dvec3 a = -sc_mu * p / (rm*rm*rm);
-                double cBody_J2 = 0.0;
-                double cBody_Radius = 1.0;
-                std::string cBody_Name = "EARTH";
-                for (auto& b : planets) {
-                    if (b.SpiceID == sc.initial_center_id) {
-                        cBody_J2 = b.J2;
-                        cBody_Radius = b.RadiusKM;
-                        cBody_Name = b.Name;
-                        break;
-                    }
-                }
-                if (cBody_J2 > 1e-9) {
-                    double R_mat[3][3]; std::string iau = "IAU_" + cBody_Name;
-                    for(auto &c: iau) c=toupper(c); pxform_c(iau.c_str(), "J2000", et, R_mat);
-                    glm::dmat3 rot = glm::dmat3(R_mat[0][0],R_mat[1][0],R_mat[2][0],R_mat[0][1],R_mat[1][1],R_mat[2][1],R_mat[0][2],R_mat[1][2],R_mat[2][2]);
-                    glm::dvec3 pl = glm::transpose(rot) * p; double r2=rm*rm; double r5=r2*r2*rm;
-                    double j2f = -1.5*cBody_J2*sc_mu*cBody_Radius*cBody_Radius/r5;
-                    a += rot * glm::dvec3(j2f*pl.x*(1.0-5.0*pl.z*pl.z/r2), j2f*pl.y*(1.0-5.0*pl.z*pl.z/r2), j2f*pl.z*(3.0-5.0*pl.z*pl.z/r2));
-                }
-                for (auto& b : planets) {
-                    if (b.SpiceID == sc.initial_center_id) continue;
-                    double stB[6], local_lt; spkgeo_c(b.SpiceID, et, "J2000", sc.initial_center_id, stB, &local_lt);
-                    glm::dvec3 rb(stB[0], stB[1], stB[2]);
-                    glm::dvec3 r_rel = p - rb;
-                    double d_mag = glm::length(r_rel), rb_mag = glm::length(rb);
-                    if (d_mag > 1.0 && rb_mag > 1.0)
-                        a += -b.GM * (r_rel/(d_mag*d_mag*d_mag) + rb/(rb_mag*rb_mag*rb_mag));
-                }
-                return a;
-            };
-            glm::dvec3 k1v=get_acc_park(park_r,park_t), k1r=park_v;
-            glm::dvec3 k2v=get_acc_park(park_r+k1r*(actual_h/2.0),park_t+actual_h/2.0), k2r=park_v+k1v*(actual_h/2.0);
-            glm::dvec3 k3v=get_acc_park(park_r+k2r*(actual_h/2.0),park_t+actual_h/2.0), k3r=park_v+k2v*(actual_h/2.0);
-            glm::dvec3 k4v=get_acc_park(park_r+k3r*actual_h,park_t+actual_h), k4r=park_v+k3v*actual_h;
-            park_v += (actual_h/6.0)*(k1v+2.0*k2v+2.0*k3v+k4v);
-            park_r += (actual_h/6.0)*(k1r+2.0*k2r+2.0*k3r+k4r);
-            park_t += actual_h; elapsed_t += actual_h;
-        }
-    };
-
     for (double dep = 0; dep <= dep_max; dep += dep_step) {
         double testET = base_et + dep * 86400.0;
         
-        step_parking(dep - last_dep_days);
-        last_dep_days = dep;
-        
         glm::dvec3 test_r = park_r;
         glm::dvec3 test_v = park_v;
+        if (dep > 0.0) {
+            test_r = PropagateKepler(park_r, park_v, dep * 86400.0, sc_mu, test_v);
+        }
 
         if (sc.initial_center_id != centralBodyIdx) {
             double stateC[6];
