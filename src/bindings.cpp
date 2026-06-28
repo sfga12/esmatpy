@@ -221,19 +221,40 @@ void SyncCartesianFromKeplerian(double sma, double ecc, double inc, double raan,
     vel = glm::dvec3(state[3], state[4], state[5]);
 }
 
+// Maps a barycenter SPICE ID (1-9) to the corresponding primary planet ID
+// so that physical parameters (RADII, J2) can be queried correctly.
+// e.g. 4 (Mars Barycenter) -> 499 (Mars), 5 -> 599 (Jupiter), etc.
+// Non-barycenter IDs (>=100 or special) are returned unchanged.
+inline int BarycenterToPlanetID(int id) {
+    if (id >= 1 && id <= 9) return id * 100 + 99;
+    return id;
+}
+
 double GetBodyGM(int spiceID) {
     SpiceInt n;
     SpiceDouble v[1];
     bodvcd_c(spiceID, "GM", 1, &n, v);
+    if (failed_c()) {
+        reset_c();
+        // Try via the planet ID if this was a barycenter
+        int planetID = BarycenterToPlanetID(spiceID);
+        if (planetID != spiceID) {
+            bodvcd_c(planetID, "GM", 1, &n, v);
+            if (failed_c()) { reset_c(); return 0.0; }
+        } else {
+            return 0.0;
+        }
+    }
     return v[0];
 }
 
 double GetBodyRadius(int spiceID) {
+    int queryID = BarycenterToPlanetID(spiceID); // always use planet, not barycenter
     SpiceInt n;
     SpiceDouble v[3];
     erract_c("SET", 0, "RETURN");
     errprt_c("SET", 0, "NONE");
-    bodvcd_c(spiceID, "RADII", 3, &n, v);
+    bodvcd_c(queryID, "RADII", 3, &n, v);
     double r = 0.0;
     if (!failed_c()) { r = v[0]; }
     reset_c();
@@ -315,13 +336,15 @@ std::vector<BurnEntry> calculate_navigation_plan(
         b.GM = GetBodyGM(id);
         b.RadiusKM = GetBodyRadius(id);
         b.J2 = 0.0;
-        if (bodfnd_c(id, "J2")) {
+        int j2QueryID = BarycenterToPlanetID(id); // use planet ID for physical params
+        if (bodfnd_c(j2QueryID, "J2")) {
             SpiceInt n; SpiceDouble j2v[1];
-            bodvcd_c(id, "J2", 1, &n, j2v);
+            bodvcd_c(j2QueryID, "J2", 1, &n, j2v);
             b.J2 = j2v[0];
         } else {
-            if (id == 399) b.J2 = 0.001082626;
-            else if (id == 301) b.J2 = 0.0002027;
+            if (j2QueryID == 399) b.J2 = 0.001082626;  // Earth
+            else if (j2QueryID == 301) b.J2 = 0.0002027; // Moon
+            else if (j2QueryID == 499) b.J2 = 0.001964;  // Mars
         }
         // Approximate name
         SpiceChar name[32]; SpiceBoolean found;
