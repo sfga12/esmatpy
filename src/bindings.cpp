@@ -29,6 +29,7 @@ struct BurnEntry {
     double dvx = 0, dvy = 0, dvz = 0;       
     int refBodyID = 0;              
     bool isVNB = false;                 
+    bool isDynamicCircularize = false;
     bool enabled = true;
 };
 
@@ -502,6 +503,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
         wait1.get_s = sec - wait1.get_h * 3600.0 - wait1.get_m * 60.0;
         wait1.dvx = 0; wait1.dvy = 0; wait1.dvz = 0;
         wait1.isVNB = false;
+        wait1.isDynamicCircularize = false;
         wait1.refBodyID = sc.initial_center_id;
         table.push_back(wait1);
     }
@@ -812,6 +814,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
     tmi.dvy = dv_vec.y;
     tmi.dvz = dv_vec.z;
     tmi.isVNB = tmi_isVNB;
+    tmi.isDynamicCircularize = false;
     tmi.refBodyID = tmi_refBodyID;
     table.push_back(tmi);
     
@@ -849,6 +852,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
             soi_wait.targetAltKM = safe_altitude; 
             soi_wait.refBodyID = 0; // Coast
             soi_wait.dvx = 0; soi_wait.dvy = 0; soi_wait.dvz = 0;
+            soi_wait.isDynamicCircularize = false;
             table.push_back(soi_wait);
         } else {
             // Fallback to Apsis
@@ -868,8 +872,9 @@ std::vector<BurnEntry> calculate_navigation_plan(
         double v_circ_opt   = std::sqrt(target_gm / r_peri_opt);
         double dv2 = actual_peri_v - v_circ_opt; // Bugfix 2: match ESMAT.exe logic
         
-        loi.dvx = -dv2; loi.dvy = 0; loi.dvz = 0; 
+        loi.dvx = 0.0; loi.dvy = 0; loi.dvz = 0; 
         loi.isVNB = true;
+        loi.isDynamicCircularize = true;
         loi.refBodyID = targets[0].spiceID;
         table.push_back(loi);
     } else if (targets[0].objective == MissionObjective::Flyby) {
@@ -926,6 +931,7 @@ PYBIND11_MODULE(core, m) {
         .def_readwrite("dvy", &BurnEntry::dvy)
         .def_readwrite("dvz", &BurnEntry::dvz)
         .def_readwrite("isVNB", &BurnEntry::isVNB)
+        .def_readwrite("isDynamicCircularize", &BurnEntry::isDynamicCircularize)
         .def_readwrite("refBodyID", &BurnEntry::refBodyID)
         .def("__repr__", [](const BurnEntry &b) {
             std::string s = "<BurnEntry trigger=";
