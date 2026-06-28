@@ -318,7 +318,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
         b.J2 = 0.0;
         erract_c("SET", 0, "RETURN");
         errprt_c("SET", 0, "NONE");
-        bodvrd_c(std::to_string(id).c_str(), "J2", 1, &n, j2v);
+        bodvcd_c(id, "J2", 1, &n, j2v);
         if (!failed_c()) { b.J2 = j2v[0]; }
         reset_c();
         erract_c("SET", 0, "ABORT");
