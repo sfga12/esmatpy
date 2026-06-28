@@ -804,6 +804,9 @@ std::vector<BurnEntry> calculate_navigation_plan(
 PYBIND11_MODULE(core, m) {
     m.doc() = "ESMAT Core Python Bindings";
 
+    // Prevent SPICE from crashing the Python process on errors
+    erract_c("SET", 0, (SpiceChar*)"RETURN");
+
     m.def("load_kernel", [](const std::string& path) { furnsh_c(path.c_str()); }, "Load a SPICE kernel");
     m.def("unload_kernel", [](const std::string& path) { unload_c(path.c_str()); }, "Unload a SPICE kernel");
     m.def("str2et", [](const std::string& time_str) { double et = 0.0; str2et_c(time_str.c_str(), &et); return et; }, "Convert UTC time string to ET");
