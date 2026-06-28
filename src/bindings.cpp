@@ -140,8 +140,12 @@ inline glm::dvec3 PropagateKepler(const glm::dvec3& r0, const glm::dvec3& v0, do
     double e = glm::length(e_vec);
     if (e >= 1.0) { v_out = v0; return r0; }
     
-    double sinE0 = rdotv / (e * std::sqrt(mu * a));
-    double cosE0 = (1.0 - r0_mag / a) / e;
+    double sinE0 = 0.0;
+    double cosE0 = 1.0;
+    if (e > 1e-12) {
+        sinE0 = rdotv / (e * std::sqrt(mu * a));
+        cosE0 = (1.0 - r0_mag / a) / e;
+    }
     double E0 = std::atan2(sinE0, cosE0);
     double M0 = E0 - e * std::sin(E0);
     double Mt = M0 + n * dt;
