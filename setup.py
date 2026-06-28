@@ -45,11 +45,13 @@ if not os.path.exists(cspice_dir):
         cspice_tar = os.path.join(deps_dir, "cspice.tar.Z")
         urllib.request.urlretrieve(cspice_url, cspice_tar)
         subprocess.check_call(["tar", "-xf", cspice_tar], cwd=deps_dir)
+        os.rename(os.path.join(deps_dir, "cspice", "lib", "cspice.a"), os.path.join(deps_dir, "cspice", "lib", "libcspice.a"))
     else: # Linux
         cspice_url = "https://naif.jpl.nasa.gov/pub/naif/toolkit//C/PC_Linux_GCC_64bit/packages/cspice.tar.Z"
         cspice_tar = os.path.join(deps_dir, "cspice.tar.Z")
         urllib.request.urlretrieve(cspice_url, cspice_tar)
         subprocess.check_call(["tar", "-xf", cspice_tar], cwd=deps_dir)
+        os.rename(os.path.join(deps_dir, "cspice", "lib", "cspice.a"), os.path.join(deps_dir, "cspice", "lib", "libcspice.a"))
 
 ext_modules = [
     Extension(
