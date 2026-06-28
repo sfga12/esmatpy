@@ -606,11 +606,12 @@ std::vector<BurnEntry> calculate_navigation_plan(
         printf("[NAV-DBG] Dep pos (CB frame): X=%d Y=%d Z=%d km | |v|=%f\n", (int)current_r.x, (int)current_r.y, (int)current_r.z, glm::length(current_v));
 
         double j2 = 0.0;
-        SpiceInt n;
-        bodvcd_c(centralBodyIdx, "J2", 1, &n, &j2);
-        if (failed_c()) {
-            reset_c();
+        if (bodfnd_c(centralBodyIdx, "J2")) {
+            SpiceInt n;
+            bodvcd_c(centralBodyIdx, "J2", 1, &n, &j2);
+        } else {
             if (centralBodyIdx == 399) j2 = 0.001082626; // Earth fallback
+            else if (centralBodyIdx == 301) j2 = 0.0002027; // Moon fallback
         }
         
         double r_peri_target = target_radius + targets[0].targetAltKm;
