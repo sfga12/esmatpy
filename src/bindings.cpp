@@ -314,15 +314,15 @@ std::vector<BurnEntry> calculate_navigation_plan(
         b.SpiceID = id;
         b.GM = GetBodyGM(id);
         b.RadiusKM = GetBodyRadius(id);
-        SpiceInt n; SpiceDouble j2v[1];
         b.J2 = 0.0;
-        erract_c("SET", 0, "RETURN");
-        errprt_c("SET", 0, "NONE");
-        bodvcd_c(id, "J2", 1, &n, j2v);
-        if (!failed_c()) { b.J2 = j2v[0]; }
-        reset_c();
-        erract_c("SET", 0, "ABORT");
-        errprt_c("SET", 0, "DEFAULT");
+        if (bodfnd_c(id, "J2")) {
+            SpiceInt n; SpiceDouble j2v[1];
+            bodvcd_c(id, "J2", 1, &n, j2v);
+            b.J2 = j2v[0];
+        } else {
+            if (id == 399) b.J2 = 0.001082626;
+            else if (id == 301) b.J2 = 0.0002027;
+        }
         // Approximate name
         SpiceChar name[32]; SpiceBoolean found;
         bodc2n_c(id, 32, name, &found);
