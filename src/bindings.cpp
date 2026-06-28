@@ -387,8 +387,12 @@ std::vector<BurnEntry> calculate_navigation_plan(
     double tof_step = (T_h / 86400.0) / 40.0;
     if (dep_step < 0.1) dep_step = 0.1;
     if (tof_step < 0.1) tof_step = 0.1;
-
+    
+    // For interplanetary: cap search to 1 synodic period or 365 days (whichever is smaller)
     double dep_max = (S/86400.0) + dep_step;
+    if (dep_max > 365.0) dep_max = 365.0;
+    // Ensure reasonable step count for interplanetary
+    if (dep_max > 50.0 && dep_step < 1.0) dep_step = 1.0;
 
     if (r1_dist < 150000.0) {
         double v0_mag = glm::length(sc_vel);
@@ -429,10 +433,12 @@ std::vector<BurnEntry> calculate_navigation_plan(
         }
         
         double hohmann_tof_days = T_h / 86400.0;
+        // For interplanetary (TOF > 50d), use coarser grid to stay fast
+        bool is_interplanetary = (hohmann_tof_days > 50.0);
         double search_tof_min = hohmann_tof_days * 0.4;
-        double search_tof_max = hohmann_tof_days * 1.5;
+        double search_tof_max = hohmann_tof_days * (is_interplanetary ? 1.3 : 1.5);
         
-        double current_tof_steps = (hohmann_tof_days < 10.0) ? 40.0 : 120.0;
+        double current_tof_steps = (hohmann_tof_days < 10.0) ? 40.0 : (is_interplanetary ? 40.0 : 80.0);
         tof_step = (search_tof_max - search_tof_min) / current_tof_steps;
 
         for (double tof_d = search_tof_min; tof_d <= search_tof_max; tof_d += tof_step) {
