@@ -460,8 +460,10 @@ std::vector<BurnEntry> calculate_navigation_plan(
                     double r_mag = glm::length(r_rel);
                     double v_req_at_r = std::sqrt(v_inf * v_inf + 2.0 * sc_mu / r_mag);
                     double speed_diff = std::abs(v_req_at_r - glm::length(v_rel));
-                    double alignment = glm::dot(glm::normalize(v_rel), glm::normalize(v_inf_vec));
-                    current_dv = speed_diff + (1.0 - alignment) * 5.0; 
+                    // BUG FIX: Alignment cezası kaldirildi.
+                    // Interplanetary departure'da spacecraft park yörüngesinde optimal
+                    // fazi seçebilir, dolayisiyla yalnizca speed_diff (gerçek TMI DV) kullanilir.
+                    current_dv = speed_diff;
                 } else {
                     current_dv = glm::length(lam.v1 - test_v);
                 }
@@ -888,12 +890,25 @@ std::vector<BurnEntry> calculate_navigation_plan(
         loi.trigger = TriggerType::APSIS;
         loi.apsisType = 1; 
         
-        // Use Virtual Pilot's periapsis velocity for precise insertion
-        double r_peri_opt = target_r + targets[0].targetAltKm;
+        // LOI DV: Patched Conic (Lambert v2 bazli) --- virtual pilot yerine
+        // final_lam.v2 = heliocentric arrival velocity (Lambert)
+        // loi_target_v  = target body heliocentric velocity at arrival
+        // v_inf = arrival hyperbolic excess relative to target
+        // v_peri = sqrt(v_inf^2 + 2*GM/r_peri)  [vis-viva]
+        double r_peri_opt   = target_r + targets[0].targetAltKm;
         double v_circ_opt   = std::sqrt(target_gm / r_peri_opt);
-        double dv2 = actual_peri_v - v_circ_opt; // Bugfix 2: match ESMAT.exe logic
+        double dv_loi;
+        if (final_lam.success) {
+            glm::dvec3 v_inf_arr = final_lam.v2 - loi_target_v;
+            double v_inf_sq      = glm::dot(v_inf_arr, v_inf_arr);
+            double v_hyp_peri    = std::sqrt(std::max(0.0, v_inf_sq + 2.0 * target_gm / r_peri_opt));
+            dv_loi = v_hyp_peri - v_circ_opt;
+        } else {
+            // Fallback: virtual pilot tahmini
+            dv_loi = std::max(0.0, actual_peri_v - v_circ_opt);
+        }
         
-        loi.dvx = -dv2; loi.dvy = 0; loi.dvz = 0; 
+        loi.dvx = -dv_loi; loi.dvy = 0; loi.dvz = 0; 
         loi.isVNB = true;
         loi.refBodyID = targets[0].spiceID;
         table.push_back(loi);
