@@ -520,14 +520,13 @@ std::vector<BurnEntry> calculate_navigation_plan(
         
         double v_inf_mag = glm::length(v_inf_vec);
         double e_hyp = 1.0 + glm::length(r_at_dep) * v_inf_mag * v_inf_mag / sc_mu;
-        double sin_beta = std::sqrt(std::max(0.0, 1.0 - 1.0/(e_hyp*e_hyp)));
         
         double best_phase_dt = 0.0;
         double max_align = -2.0;
         for (double dt = 0; dt < T_orbit; dt += T_orbit / 100.0) {
             glm::dvec3 r_test, v_test;
             r_test = PropagateKepler(r_at_dep, v_at_dep, dt, sc_mu, v_test);
-            glm::dvec3 V_p_dir = glm::normalize(v_inf_vec / v_inf_mag + sin_beta * glm::normalize(r_test));
+            glm::dvec3 V_p_dir = glm::normalize(v_inf_vec / v_inf_mag + (1.0 / e_hyp) * glm::normalize(r_test));
             double align = glm::dot(V_p_dir, glm::normalize(v_test));
             if (align > max_align) {
                 max_align = align;
@@ -540,7 +539,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
         for (double dt = fine_start; dt <= fine_end; dt += T_orbit / 5000.0) {
             glm::dvec3 r_test, v_test;
             r_test = PropagateKepler(r_at_dep, v_at_dep, dt, sc_mu, v_test);
-            glm::dvec3 V_p_dir = glm::normalize(v_inf_vec / v_inf_mag + sin_beta * glm::normalize(r_test));
+            glm::dvec3 V_p_dir = glm::normalize(v_inf_vec / v_inf_mag + (1.0 / e_hyp) * glm::normalize(r_test));
             double align = glm::dot(V_p_dir, glm::normalize(v_test));
             if (align > max_align) {
                 max_align = align;
@@ -703,8 +702,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
             
             // Exact patched-conic required velocity (including out-of-plane and beta angle bend)
             double e_hyp = 1.0 + glm::length(r_rel_vp) * v_inf_mag * v_inf_mag / sc_mu;
-            double sin_beta = std::sqrt(std::max(0.0, 1.0 - 1.0/(e_hyp*e_hyp)));
-            glm::dvec3 V_p_dir = glm::normalize(v_inf / v_inf_mag + sin_beta * glm::normalize(r_rel_vp));
+            glm::dvec3 V_p_dir = glm::normalize(v_inf / v_inf_mag + (1.0 / e_hyp) * glm::normalize(r_rel_vp));
             
             glm::dvec3 required_v = V_p_dir * v_p;
             dv_inertial = required_v - v_rel_vp;
