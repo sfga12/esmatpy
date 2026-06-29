@@ -425,11 +425,15 @@ std::vector<BurnEntry> calculate_navigation_plan(
             test_r = PropagateKepler(park_r, park_v, dep * 86400.0, sc_mu, test_v);
         }
 
+        glm::dvec3 planet_r(0.0);
+        glm::dvec3 planet_v(0.0);
         if (sc.initial_center_id != centralBodyIdx) {
             double stateC[6];
             spkgeo_c(sc.initial_center_id, testET, "J2000", centralBodyIdx, stateC, &lt);
-            test_r += glm::dvec3(stateC[0], stateC[1], stateC[2]);
-            test_v += glm::dvec3(stateC[3], stateC[4], stateC[5]);
+            planet_r = glm::dvec3(stateC[0], stateC[1], stateC[2]);
+            planet_v = glm::dvec3(stateC[3], stateC[4], stateC[5]);
+            test_r += planet_r;
+            test_v += planet_v;
         }
         
         double hohmann_tof_days = T_h / 86400.0;
@@ -450,19 +454,16 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 double current_dv = 0.0;
                 
                 if (sc.initial_center_id != centralBodyIdx) {
-                    double stC[6], lt2;
-                    spkgeo_c(sc.initial_center_id, testET, "J2000", centralBodyIdx, stC, &lt2);
-                    glm::dvec3 planet_v(stC[3], stC[4], stC[5]);
                     glm::dvec3 v_inf_vec = lam.v1 - planet_v;
                     double v_inf = glm::length(v_inf_vec);
-                    glm::dvec3 r_rel = test_r - glm::dvec3(stC[0], stC[1], stC[2]);
+                    glm::dvec3 r_rel = test_r - planet_r;
                     glm::dvec3 v_rel = test_v - planet_v;
                     double r_mag = glm::length(r_rel);
                     double v_req_at_r = std::sqrt(v_inf * v_inf + 2.0 * sc_mu / r_mag);
                     double speed_diff = std::abs(v_req_at_r - glm::length(v_rel));
-                    // BUG FIX: Alignment cezası kaldirildi.
-                    // Interplanetary departure'da spacecraft park yörüngesinde optimal
-                    // fazi seçebilir, dolayisiyla yalnizca speed_diff (gerçek TMI DV) kullanilir.
+                    // BUG FIX: Alignment cezasi kaldirildi.
+                    // Interplanetary departure'da spacecraft park yorungesinde optimal
+                    // fazi secebilir, dolayisiyla yalnizca speed_diff (gercek TMI DV) kullanilir.
                     current_dv = speed_diff;
                 } else {
                     current_dv = glm::length(lam.v1 - test_v);
