@@ -854,7 +854,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
 
         double trash_v;
         double last_dist = 0;
-        int max_iters = (sc.initial_center_id != centralBodyIdx) ? 30 : 12;
+        int max_iters = (sc.initial_center_id != centralBodyIdx) ? 150 : 50;
         double lr = 0.8;
         double best_d0 = 1e15;
         glm::dvec3 best_dv(dv_v, dv_b, dv_n);
