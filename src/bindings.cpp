@@ -497,6 +497,54 @@ std::vector<BurnEntry> calculate_navigation_plan(
         }
     }
     
+    if (min_dv < 1e8 && sc.initial_center_id != centralBodyIdx) {
+        // Optimize parking orbit phase for alignment with V_infinity
+        double stC[6], lt2;
+        spkgeo_c(sc.initial_center_id, base_et + best_dep * 86400.0, "J2000", centralBodyIdx, stC, &lt2);
+        glm::dvec3 planet_v(stC[3], stC[4], stC[5]);
+        glm::dvec3 v_inf_vec = best_lam.v1 - planet_v;
+        
+        glm::dvec3 r_at_dep = park_r;
+        glm::dvec3 v_at_dep = park_v;
+        if (best_dep > 0.0) {
+            r_at_dep = PropagateKepler(park_r, park_v, best_dep * 86400.0, sc_mu, v_at_dep);
+        }
+        
+        double v0_mag = glm::length(v_at_dep);
+        double eps = (v0_mag * v0_mag) / 2.0 - sc_mu / glm::length(r_at_dep);
+        double T_orbit = 86400.0;
+        if (eps < 0.0) {
+            double sma_o = -sc_mu / (2.0 * eps);
+            T_orbit = 2.0 * 3.1415926535 * std::sqrt((sma_o*sma_o*sma_o)/sc_mu);
+        }
+        
+        double best_phase_dt = 0.0;
+        double max_align = -2.0;
+        for (double dt = 0; dt < T_orbit; dt += T_orbit / 100.0) {
+            glm::dvec3 r_test, v_test;
+            r_test = PropagateKepler(r_at_dep, v_at_dep, dt, sc_mu, v_test);
+            double align = glm::dot(glm::normalize(v_test), glm::normalize(v_inf_vec));
+            if (align > max_align) {
+                max_align = align;
+                best_phase_dt = dt;
+            }
+        }
+        
+        double fine_start = std::max(0.0, best_phase_dt - T_orbit / 50.0);
+        double fine_end = best_phase_dt + T_orbit / 50.0;
+        for (double dt = fine_start; dt <= fine_end; dt += T_orbit / 5000.0) {
+            glm::dvec3 r_test, v_test;
+            r_test = PropagateKepler(r_at_dep, v_at_dep, dt, sc_mu, v_test);
+            double align = glm::dot(glm::normalize(v_test), glm::normalize(v_inf_vec));
+            if (align > max_align) {
+                max_align = align;
+                best_phase_dt = dt;
+            }
+        }
+        
+        best_dep += best_phase_dt / 86400.0;
+    }
+
     // BUILD MISSION TABLE 
     if (best_dep > 0.001) {
         BurnEntry wait1;
