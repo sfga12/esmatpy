@@ -313,7 +313,9 @@ std::vector<BurnEntry> calculate_navigation_plan(
     SpacecraftWrapper& sc,
     SimulationSettings& sim,
     NavigationPlanWrapper& nav_plan,
-    double initial_delay_days
+    double initial_delay_days,
+    int n_dep = 40,   // departure grid resolution (lower = faster, less accurate)
+    int n_tof = 40    // time-of-flight grid resolution
 ) {
     std::vector<BurnEntry> table;
     std::vector<NavTarget>& targets = nav_plan.targets;
@@ -383,9 +385,9 @@ std::vector<BurnEntry> calculate_navigation_plan(
     double best_dep = initial_delay_days;
     double best_tof = T_h / 86400.0;
 
-    // Fully physics-derived grid: always N_DEP x N_TOF points, no hardcoded thresholds
-    const int N_DEP = 40;
-    const int N_TOF = 40;
+    // Grid resolution — configurable from Python
+    const int N_DEP = n_dep;
+    const int N_TOF = n_tof;
 
     double dep_max = (S / 86400.0); // One full synodic period
     double dep_step = dep_max / N_DEP;
@@ -1009,5 +1011,8 @@ PYBIND11_MODULE(core, m) {
         .def("add_target", &NavigationPlanWrapper::add_target, py::arg("target_id"), py::arg("objective"), py::arg("target_alt_km"));
 
     m.def("calculate_navigation_plan", &calculate_navigation_plan, 
-        py::arg("spacecraft"), py::arg("simulation"), py::arg("targets"), py::arg("initial_delay_days") = 0.0);
+        py::arg("spacecraft"), py::arg("simulation"), py::arg("targets"),
+        py::arg("initial_delay_days") = 0.0,
+        py::arg("n_dep") = 40,
+        py::arg("n_tof") = 40);
 }
