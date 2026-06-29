@@ -518,12 +518,17 @@ std::vector<BurnEntry> calculate_navigation_plan(
             T_orbit = 2.0 * 3.1415926535 * std::sqrt((sma_o*sma_o*sma_o)/sc_mu);
         }
         
+        double v_inf_mag = glm::length(v_inf_vec);
+        double e_hyp = 1.0 + glm::length(r_at_dep) * v_inf_mag * v_inf_mag / sc_mu;
+        double sin_beta = std::sqrt(std::max(0.0, 1.0 - 1.0/(e_hyp*e_hyp)));
+        
         double best_phase_dt = 0.0;
         double max_align = -2.0;
         for (double dt = 0; dt < T_orbit; dt += T_orbit / 100.0) {
             glm::dvec3 r_test, v_test;
             r_test = PropagateKepler(r_at_dep, v_at_dep, dt, sc_mu, v_test);
-            double align = glm::dot(glm::normalize(v_test), glm::normalize(v_inf_vec));
+            glm::dvec3 V_p_dir = glm::normalize(v_inf_vec / v_inf_mag + sin_beta * glm::normalize(r_test));
+            double align = glm::dot(V_p_dir, glm::normalize(v_test));
             if (align > max_align) {
                 max_align = align;
                 best_phase_dt = dt;
@@ -535,7 +540,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
         for (double dt = fine_start; dt <= fine_end; dt += T_orbit / 5000.0) {
             glm::dvec3 r_test, v_test;
             r_test = PropagateKepler(r_at_dep, v_at_dep, dt, sc_mu, v_test);
-            double align = glm::dot(glm::normalize(v_test), glm::normalize(v_inf_vec));
+            glm::dvec3 V_p_dir = glm::normalize(v_inf_vec / v_inf_mag + sin_beta * glm::normalize(r_test));
+            double align = glm::dot(V_p_dir, glm::normalize(v_test));
             if (align > max_align) {
                 max_align = align;
                 best_phase_dt = dt;
@@ -695,9 +701,12 @@ std::vector<BurnEntry> calculate_navigation_plan(
             double v_esc = std::sqrt(2.0 * sc_mu / glm::length(r_rel_vp));
             double v_p = std::sqrt(v_inf_mag * v_inf_mag + v_esc * v_esc);
             
-            // Starting guess: purely prograde escape.
-            // Pilot will adjust N and B to perfectly hit the target.
-            glm::dvec3 required_v = V * v_p;
+            // Exact patched-conic required velocity (including out-of-plane and beta angle bend)
+            double e_hyp = 1.0 + glm::length(r_rel_vp) * v_inf_mag * v_inf_mag / sc_mu;
+            double sin_beta = std::sqrt(std::max(0.0, 1.0 - 1.0/(e_hyp*e_hyp)));
+            glm::dvec3 V_p_dir = glm::normalize(v_inf / v_inf_mag + sin_beta * glm::normalize(r_rel_vp));
+            
+            glm::dvec3 required_v = V_p_dir * v_p;
             dv_inertial = required_v - v_rel_vp;
         } else {
             // Local transfer (e.g., Earth -> Moon)
@@ -848,6 +857,10 @@ std::vector<BurnEntry> calculate_navigation_plan(
         double trash_v;
         double last_dist = 0;
         int max_iters = (sc.initial_center_id != centralBodyIdx) ? 30 : 12;
+        double lr = 0.8;
+        double best_d0 = 1e15;
+        glm::dvec3 best_dv(dv_v, dv_b, dv_n);
+        
         for (int iter = 0; iter < max_iters; ++iter) {
             double d0 = runVirtualFlight(dv_v, dv_n, dv_b, actual_peri_v);
             last_dist = d0;
@@ -858,6 +871,18 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 break;
             }
             if (std::abs(err) < 0.1) break;
+            
+            // Backtracking to prevent oscillations
+            if (d0 > best_d0 && iter > 0) {
+                lr *= 0.5;
+                dv_v = best_dv.x; dv_b = best_dv.y; dv_n = best_dv.z;
+                py::print("[PILOT] Iter", iter, ": Overshoot! Backtracking... lr=", lr, py::arg("flush")=true);
+                continue;
+            } else {
+                best_d0 = d0;
+                best_dv = glm::dvec3(dv_v, dv_b, dv_n);
+                lr = std::min(0.8, lr * 1.2);
+            }
 
             double eps = 1e-4;
             double ddv = (runVirtualFlight(dv_v+eps,dv_n,dv_b,trash_v) - d0)/eps;
@@ -868,9 +893,9 @@ std::vector<BurnEntry> calculate_navigation_plan(
             if (grad_mag > 1e-18) {
                 double step = err / grad_mag;
                 double max_adj = (sc.initial_center_id != centralBodyIdx) ? 1.5 : 0.5; 
-                double adj_v = std::clamp(step * ddv, -max_adj, max_adj); dv_v -= adj_v * 0.8;
-                double adj_n = std::clamp(step * ddn, -max_adj, max_adj); dv_n -= adj_n * 0.8;
-                double adj_b = std::clamp(step * ddb, -max_adj, max_adj); dv_b -= adj_b * 0.8;
+                double adj_v = std::clamp(step * ddv, -max_adj, max_adj); dv_v -= adj_v * lr;
+                double adj_n = std::clamp(step * ddn, -max_adj, max_adj); dv_n -= adj_n * lr;
+                double adj_b = std::clamp(step * ddb, -max_adj, max_adj); dv_b -= adj_b * lr;
             }
             py::print("[PILOT] Iter", iter, ": Periapsis=", (int)d0, "km (Err:", (int)err, "km)", py::arg("flush")=true);
         }
