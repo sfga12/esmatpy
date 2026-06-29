@@ -18,9 +18,21 @@ __all__ = [
 
 import csv
 
+def _body_name(body_id: int) -> str:
+    """Kernel yüklüyse SPICE'tan body ismini sorgular, yoksa ID string döner."""
+    try:
+        name = core.body_name(body_id)
+        if name:
+            return name.replace("_", " ").title()
+        return str(body_id)
+    except Exception:
+        return str(body_id)
+
+
 def print_burn_table(burn_table, export_csv_path="mission_plan.csv"):
     """
     Prints the burn table in a formatted way and optionally exports it to a CSV file.
+    Body names are resolved dynamically from the loaded SPICE kernels.
     """
     print(f"\n{'='*80}")
     print(f"{'ESMAT MISSION NAVIGATION PLAN':^80}")
@@ -41,17 +53,14 @@ def print_burn_table(burn_table, export_csv_path="mission_plan.csv"):
             trigger_name = "Altitude"
             ops = ["<", "<=", ">=", ">"]
             op_str = ops[burn.altCondition] if 0 <= burn.altCondition < 4 else "<="
-            
-            body_map = {399: "EARTH", 301: "MOON", 199: "MERCURY", 299: "VENUS", 499: "MARS", 10: "SUN", 0: "CENT"}
-            body_name = body_map.get(burn.altRefBodyID, str(burn.altRefBodyID))
-            
+            body_name = _body_name(burn.altRefBodyID)
             params = f"{body_name} {op_str} {burn.targetAltKM:.0f} km"
         else:
             trigger_name = "Unknown"
             params = ""
             
         frame = 'VNB' if burn.isVNB else 'J2000'
-        ref_body = {399: "EARTH", 301: "MOON", 0: "CENT"}.get(burn.refBodyID, str(burn.refBodyID))
+        ref_body = _body_name(burn.refBodyID) if burn.refBodyID != 0 else "SSB"
         
         if getattr(burn, "isDynamicCircularize", False):
             dv_str = f"dV: {'Dynamic Circularize':<29}"
@@ -60,7 +69,7 @@ def print_burn_table(burn_table, export_csv_path="mission_plan.csv"):
             dv_str = f"dV: ({burn.dvx:8.5f}, {burn.dvy:8.5f}, {burn.dvz:8.5f})"
             csv_data.append([i+1, trigger_name, params, f"{burn.dvx:.5f}", f"{burn.dvy:.5f}", f"{burn.dvz:.5f}", f"{total_dv:.5f}", ref_body, frame])
         
-        print(f"[{i+1:02d}] Trigger: {trigger_name:<15} | Params: {params:<20} | {dv_str} | Ref: {ref_body:<5} | Frame: {frame}")
+        print(f"[{i+1:02d}] Trigger: {trigger_name:<15} | Params: {params:<20} | {dv_str} | Ref: {ref_body:<8} | Frame: {frame}")
 
     print(f"{'-'*80}")
     
@@ -69,4 +78,3 @@ def print_burn_table(burn_table, export_csv_path="mission_plan.csv"):
             writer = csv.writer(file)
             writer.writerows(csv_data)
         print(f"[!] Tablo basariyla '{export_csv_path}' dosyasina kaydedildi!")
-

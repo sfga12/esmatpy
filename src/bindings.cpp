@@ -524,7 +524,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
 
     if (min_dv < 1e8) {
         double current_t = base_et + best_dep * 86400.0;
-        double tof_sec = (double)((float)best_tof) * 86400.0;
+        double tof_sec = best_tof * 86400.0;  // BUG FIX: float cast kaldırıldı (~1000s hata Mars için)
         
         // Exact N-Body Phase shift for the parking orbit
         glm::dvec3 current_r = sc.initial_pos;
@@ -825,11 +825,10 @@ std::vector<BurnEntry> calculate_navigation_plan(
         
         // Final Output as VNB
         // VNB convention: X=Velocity(prograde), Y=Normal(orbit-normal), Z=Binormal(radial)
+        // ESMAT.exe mapping: dvx=V(prograde), dvy=B(binormal/radial), dvz=N(orbit-normal)
         tmi_isVNB = true;
         tmi_refBodyID = vnbRefSpice;
         dv_vec = glm::dvec3(dv_v, dv_b, dv_n); // Match ESMAT.exe mapping (v, b, n)
-        tmi_isVNB = true;
-        tmi_refBodyID = vnbRefSpice;
     }
     
     tmi.dvx = dv_vec.x;
@@ -916,6 +915,23 @@ PYBIND11_MODULE(core, m) {
     m.def("load_kernel", [](const std::string& path) { furnsh_c(path.c_str()); }, "Load a SPICE kernel");
     m.def("unload_kernel", [](const std::string& path) { unload_c(path.c_str()); }, "Unload a SPICE kernel");
     m.def("str2et", [](const std::string& time_str) { double et = 0.0; str2et_c(time_str.c_str(), &et); return et; }, "Convert UTC time string to ET");
+
+    // Body name/code lookup — requires a loaded PCK/TPC kernel
+    m.def("body_name", [](int id) -> std::string {
+        SpiceChar name[64];
+        SpiceBoolean found;
+        bodc2n_c(id, 64, name, &found);
+        if (found) return std::string(name);
+        return "";
+    }, py::arg("id"), "Get SPICE body name from integer ID. Returns empty string if not found.");
+
+    m.def("body_code", [](const std::string& name) -> int {
+        SpiceInt code;
+        SpiceBoolean found;
+        bodn2c_c(name.c_str(), &code, &found);
+        if (found) return (int)code;
+        return -1;
+    }, py::arg("name"), "Get SPICE body ID from name string. Returns -1 if not found.");
 
     py::enum_<MissionObjective>(m, "MissionObjective")
         .value("Flyby", MissionObjective::Flyby)
