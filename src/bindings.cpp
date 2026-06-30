@@ -920,23 +920,10 @@ std::vector<BurnEntry> calculate_navigation_plan(
         loi.trigger = TriggerType::APSIS;
         loi.apsisType = 1; 
         
-        // LOI DV: Patched Conic (Lambert v2 bazli) --- virtual pilot yerine
-        // final_lam.v2 = heliocentric arrival velocity (Lambert)
-        // loi_target_v  = target body heliocentric velocity at arrival
-        // v_inf = arrival hyperbolic excess relative to target
-        // v_peri = sqrt(v_inf^2 + 2*GM/r_peri)  [vis-viva]
+        // LOI DV: BUG FIX 2 (from ESMAT.exe) - Use actual periapsis velocity from Virtual Pilot for precise insertion
         double r_peri_opt   = target_r + targets[0].targetAltKm;
         double v_circ_opt   = std::sqrt(target_gm / r_peri_opt);
-        double dv_loi;
-        if (final_lam.success) {
-            glm::dvec3 v_inf_arr = final_lam.v2 - loi_target_v;
-            double v_inf_sq      = glm::dot(v_inf_arr, v_inf_arr);
-            double v_hyp_peri    = std::sqrt(std::max(0.0, v_inf_sq + 2.0 * target_gm / r_peri_opt));
-            dv_loi = v_hyp_peri - v_circ_opt;
-        } else {
-            // Fallback: virtual pilot tahmini
-            dv_loi = std::max(0.0, actual_peri_v - v_circ_opt);
-        }
+        double dv_loi = std::max(0.0, actual_peri_v - v_circ_opt);
         
         loi.dvx = -dv_loi; loi.dvy = 0; loi.dvz = 0; 
         loi.isVNB = true;
