@@ -732,11 +732,12 @@ std::vector<BurnEntry> calculate_navigation_plan(
             glm::dvec3 v_start = current_v + (V * dvv + N * dvn + B * dvb);
             glm::dvec3 r = current_r; glm::dvec3 v = v_start;
             double t = current_t;
-            // Adaptive timestep: always ~5000 steps regardless of TOF
-            double flight_duration = tof_sec * 1.05; // 5% margin beyond TOF
-            double h_base = std::clamp(flight_duration / 5000.0, 1.0, 3600.0);
+            // Exact ESMAT.exe Integration Settings
+            double flight_duration = tof_sec + 86400.0 * 2.0; // 2 days padding for delayed arrivals
+            double h_base = 10.0;
             double elapsed_t = 0.0;
             double min_dist = 1e18; 
+            bool isImpactMode = (targets[0].objective == MissionObjective::Impact);
             
             while (elapsed_t < flight_duration) {
                 double stT[6], lt; spkgeo_c(targets[0].spiceID, t, "J2000", centralBodyIdx, stT, &lt);
@@ -744,20 +745,16 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 glm::dvec3 v_tgt(stT[3], stT[4], stT[5]);
                 double d_to_target = glm::length(r - r_tgt);
 
-                double actual_h = h_base;
-                
-                // Dynamic time stepping: slow down near ANY planet to correctly integrate gravity wells
-                for (auto& b : planets) {
-                    double stB[6], local_lt; spkgeo_c(b.SpiceID, t, "J2000", centralBodyIdx, stB, &local_lt);
-                    glm::dvec3 rb(stB[0], stB[1], stB[2]);
-                    double d_mag = glm::length(r - rb);
-                    if (d_mag < b.RadiusKM * 50.0) { // e.g., 300,000 km for Earth
-                        double local_h = std::max(1.0, (d_mag / b.RadiusKM) * 2.0); // 2s near surface, scales up
-                        actual_h = std::min(actual_h, local_h);
-                    }
+                if (isImpactMode && d_to_target <= target_radius) {
+                    min_dist = d_to_target;
+                    out_v = glm::length(v - v_tgt);
+                    break;
                 }
+
+                double actual_h = h_base;
+                if (d_to_target < r_peri_target * 5.0)
+                    actual_h = isImpactMode ? std::min(h_base, 1.0) : std::min(h_base, 10.0);
                 
-                if (d_to_target < r_peri_target * 5.0) actual_h = std::min(actual_h, 10.0);
                 if (elapsed_t + actual_h > flight_duration) actual_h = flight_duration - elapsed_t;
                 if (actual_h < 1e-6) break;
 
@@ -765,7 +762,6 @@ std::vector<BurnEntry> calculate_navigation_plan(
                     double rm = glm::length(p);
                     glm::dvec3 a = -mu * p / (rm*rm*rm);
                     
-
                     for (auto& b : planets) {
                         if (b.SpiceID == centralBodyIdx) continue;
                         double stB[6], local_lt; spkgeo_c(b.SpiceID, et, "J2000", centralBodyIdx, stB, &local_lt);
@@ -773,9 +769,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
                         glm::dvec3 r_rel = p - rb;
                         double d_mag = glm::length(r_rel), rb_mag = glm::length(rb);
                         
-                        double d_mag_eff = std::max(d_mag, b.RadiusKM);
                         if (d_mag > 1.0 && rb_mag > 1.0)
-                            a += -b.GM * (r_rel/(d_mag_eff*d_mag_eff*d_mag_eff) + rb/(rb_mag*rb_mag*rb_mag));
+                            a += -b.GM * (r_rel/(d_mag*d_mag*d_mag) + rb/(rb_mag*rb_mag*rb_mag));
                     }
                     // J2 Perturbation for Central Body (matching ESMAT.exe)
                     double cBody_J2 = 0.0;
