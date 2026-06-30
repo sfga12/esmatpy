@@ -606,8 +606,11 @@ std::vector<BurnEntry> calculate_navigation_plan(
             }
             double mu_c = GetBodyGM(sc.initial_center_id);
 
+            // Exactly match ESMAT.exe numSubSteps physics dt
+            double physics_dt = sim.step_size_sec / std::ceil(sim.step_size_sec / 1.0);
+
             while (wait_sec > 0.0) {
-                double h_wait = std::min(wait_sec, sim.step_size_sec);
+                double h_wait = std::min(wait_sec, physics_dt);
 
                 auto get_acc_park = [&](glm::dvec3 p, double et) {
                     double rm = glm::length(p);
@@ -735,8 +738,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
             glm::dvec3 r = current_r; glm::dvec3 v = v_start;
             double t = current_t;
             // Exact ESMAT.exe Integration Settings
+            double physics_dt = sim.step_size_sec / std::ceil(sim.step_size_sec / 1.0);
             double flight_duration = tof_sec + 86400.0 * 2.0; // 2 days padding for delayed arrivals
-            double h_base = 10.0;
             double elapsed_t = 0.0;
             double min_dist = 1e18; 
             bool isImpactMode = (targets[0].objective == MissionObjective::Impact);
@@ -753,10 +756,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
                     break;
                 }
 
-                double actual_h = h_base;
-                if (d_to_target < r_peri_target * 5.0)
-                    actual_h = isImpactMode ? std::min(h_base, 1.0) : std::min(h_base, 10.0);
-                
+                double actual_h = physics_dt;
                 if (elapsed_t + actual_h > flight_duration) actual_h = flight_duration - elapsed_t;
                 if (actual_h < 1e-6) break;
 
