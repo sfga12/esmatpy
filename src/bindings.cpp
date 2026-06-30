@@ -868,10 +868,12 @@ std::vector<BurnEntry> calculate_navigation_plan(
             double grad_mag = ddv*ddv + ddn*ddn + ddb*ddb;
             if (grad_mag > 1e-18) {
                 double step = err / grad_mag;
-                double max_adj = (sc.initial_center_id != centralBodyIdx) ? 1.5 : 0.5; 
-                double adj_v = std::clamp(step * ddv, -max_adj, max_adj); dv_v -= adj_v * 0.8;
-                double adj_n = std::clamp(step * ddn, -max_adj, max_adj); dv_n -= adj_n * 0.8;
-                double adj_b = std::clamp(step * ddb, -max_adj, max_adj); dv_b -= adj_b * 0.8;
+                double max_adj = (sc.initial_center_id != centralBodyIdx && centralBodyIdx == 10) ? 0.05 : 0.5; 
+                double relax_factor = (sc.initial_center_id != centralBodyIdx && centralBodyIdx == 10) ? 0.1 : 0.8;
+                
+                double adj_v = std::clamp(step * ddv, -max_adj, max_adj); dv_v -= adj_v * relax_factor;
+                double adj_n = std::clamp(step * ddn, -max_adj, max_adj); dv_n -= adj_n * relax_factor;
+                double adj_b = std::clamp(step * ddb, -max_adj, max_adj); dv_b -= adj_b * relax_factor;
             }
             py::print("[PILOT] Iter", iter, ": Periapsis=", (int)d0, "km (Err:", (int)err, "km)", py::arg("flush")=true);
         }
