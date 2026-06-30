@@ -314,9 +314,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
     SpacecraftWrapper& sc,
     SimulationSettings& sim,
     NavigationPlanWrapper& nav_plan,
-    double initial_delay_days,
-    int n_dep = 200,   // departure grid resolution (matches ESMAT.exe 200 steps)
-    int n_tof = 120    // time-of-flight grid resolution (matches ESMAT.exe 120 steps)
+    double initial_delay_days
 ) {
     std::vector<BurnEntry> table;
     std::vector<NavTarget>& targets = nav_plan.targets;
@@ -387,13 +385,12 @@ std::vector<BurnEntry> calculate_navigation_plan(
     double best_dep = initial_delay_days;
     double best_tof = T_h / 86400.0;
 
-    // Grid resolution — configurable from Python
-    const int N_DEP = n_dep;
-    const int N_TOF = n_tof;
+    double dep_step = (S / 86400.0) / 40.0; 
+    double tof_step = (T_h / 86400.0) / 40.0;
+    if (dep_step < 0.1) dep_step = 0.1;
+    if (tof_step < 0.1) tof_step = 0.1;
 
-    double dep_max = (S / 86400.0); // One full synodic period
-    double dep_step = dep_max / N_DEP;
-    if (dep_step < 1e-3) dep_step = 1e-3;
+    double dep_max = (S / 86400.0) + dep_step; // One full synodic period
 
     if (r1_dist < 150000.0) {
         // Spacecraft is in a parking orbit: search over 2 orbital periods
@@ -403,7 +400,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
             double sma_o = -sc_mu / (2.0 * eps);
             double T_orbit = 2.0 * 3.1415926535 * std::sqrt((sma_o*sma_o*sma_o)/sc_mu);
             dep_max = (T_orbit / 86400.0) * 2.0;
-            dep_step = dep_max / N_DEP;
+            dep_step = (T_orbit / 86400.0) / 100.0;
         } else {
             dep_max = 0.0;
         }
@@ -442,7 +439,10 @@ std::vector<BurnEntry> calculate_navigation_plan(
         // TOF search range and step are fully derived from Hohmann TOF
         double search_tof_min = hohmann_tof_days * 0.4;
         double search_tof_max = hohmann_tof_days * 1.5;
-        double tof_step = (search_tof_max - search_tof_min) / N_TOF;
+        
+        // Exact dynamic TOF resolution from ESMAT.exe
+        double current_tof_steps = (hohmann_tof_days < 10.0) ? 40.0 : 120.0;
+        tof_step = (search_tof_max - search_tof_min) / current_tof_steps;
 
         for (double tof_d = search_tof_min; tof_d <= search_tof_max; tof_d += tof_step) {
             double arrET = testET + tof_d * 86400.0;
@@ -1055,7 +1055,5 @@ PYBIND11_MODULE(core, m) {
 
     m.def("calculate_navigation_plan", &calculate_navigation_plan, 
         py::arg("spacecraft"), py::arg("simulation"), py::arg("targets"),
-        py::arg("initial_delay_days") = 0.0,
-        py::arg("n_dep") = 200,
-        py::arg("n_tof") = 120);
+        py::arg("initial_delay_days") = 0.0);
 }
