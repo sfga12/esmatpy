@@ -824,9 +824,6 @@ std::vector<BurnEntry> calculate_navigation_plan(
         double trash_v;
         double last_dist = 0;
         int max_iters = (sc.initial_center_id != centralBodyIdx) ? 150 : 50;
-        double lr = 0.8;
-        double best_d0 = 1e15;
-        glm::dvec3 best_dv(dv_v, dv_b, dv_n);
         
         for (int iter = 0; iter < max_iters; ++iter) {
             double d0 = runVirtualFlight(dv_v, dv_n, dv_b, actual_peri_v);
@@ -838,18 +835,6 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 break;
             }
             if (std::abs(err) < 0.1) break;
-            
-            // Backtracking to prevent oscillations
-            if (d0 > best_d0 && iter > 0) {
-                lr *= 0.5;
-                dv_v = best_dv.x; dv_b = best_dv.y; dv_n = best_dv.z;
-                py::print("[PILOT] Iter", iter, ": Overshoot! Backtracking... lr=", lr, py::arg("flush")=true);
-                continue;
-            } else {
-                best_d0 = d0;
-                best_dv = glm::dvec3(dv_v, dv_b, dv_n);
-                lr = std::min(0.8, lr * 1.2);
-            }
 
             double eps = 1e-4;
             double ddv = (runVirtualFlight(dv_v+eps,dv_n,dv_b,trash_v) - d0)/eps;
@@ -860,9 +845,9 @@ std::vector<BurnEntry> calculate_navigation_plan(
             if (grad_mag > 1e-18) {
                 double step = err / grad_mag;
                 double max_adj = (sc.initial_center_id != centralBodyIdx) ? 1.5 : 0.5; 
-                double adj_v = std::clamp(step * ddv, -max_adj, max_adj); dv_v -= adj_v * lr;
-                double adj_n = std::clamp(step * ddn, -max_adj, max_adj); dv_n -= adj_n * lr;
-                double adj_b = std::clamp(step * ddb, -max_adj, max_adj); dv_b -= adj_b * lr;
+                double adj_v = std::clamp(step * ddv, -max_adj, max_adj); dv_v -= adj_v * 0.8;
+                double adj_n = std::clamp(step * ddn, -max_adj, max_adj); dv_n -= adj_n * 0.8;
+                double adj_b = std::clamp(step * ddb, -max_adj, max_adj); dv_b -= adj_b * 0.8;
             }
             py::print("[PILOT] Iter", iter, ": Periapsis=", (int)d0, "km (Err:", (int)err, "km)", py::arg("flush")=true);
         }
