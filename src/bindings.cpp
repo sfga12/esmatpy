@@ -585,7 +585,10 @@ std::vector<BurnEntry> calculate_navigation_plan(
 
     if (min_dv < 1e8) {
         double current_t = base_et + best_dep * 86400.0;
-        double tof_sec = best_tof * 86400.0;  // BUG FIX: float cast kaldırıldı (~1000s hata Mars için)
+        
+        // REVERT BUG FIX: Must cast to float to exactly match ESMAT.exe (which uses float in NavTarget)
+        targets[0].tofDays = (float)best_tof;
+        double tof_sec = targets[0].tofDays * 86400.0;
         
         // Exact N-Body Phase shift for the parking orbit
         glm::dvec3 current_r = sc.initial_pos;
@@ -661,7 +664,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
         glm::dvec3 target_pos_center = best_target_r;
         glm::dvec3 target_v = best_target_v;
         // Re-query target state at arrival time for the final lambert (more accurate)
-        double arr_et_final = base_et + best_dep * 86400.0 + best_tof * 86400.0;
+        double arr_et_final = current_t + tof_sec;
         {
             double stTfinal[6], lt_f;
             spkgeo_c(targets[0].spiceID, arr_et_final, "J2000", centralBodyIdx, stTfinal, &lt_f);
