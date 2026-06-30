@@ -345,6 +345,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
             b.J2 = j2v[0];
         }
         // If not in kernel, J2 stays 0 (acceptable for interplanetary transfers)
+        if (b.J2 == 0.0 && id == 399) b.J2 = 0.00108263; // ESMAT.exe fallback for Earth
+        
         // Approximate name
         SpiceChar name[32]; SpiceBoolean found;
         bodc2n_c(id, 32, name, &found);
