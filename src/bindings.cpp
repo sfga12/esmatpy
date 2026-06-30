@@ -738,11 +738,29 @@ std::vector<BurnEntry> calculate_navigation_plan(
         
         double r_peri_target = target_radius + targets[0].targetAltKm;
         
+        // Hoist J2 constants for Central Body
+        double cBody_J2 = 0.0;
+        double cBody_Radius = 1.0;
+        std::string cBody_Name = "EARTH";
+        for (auto& b : planets) {
+            if (b.SpiceID == centralBodyIdx) {
+                cBody_J2 = b.J2;
+                cBody_Radius = b.RadiusKM;
+                cBody_Name = b.Name;
+                break;
+            }
+        }
+        
+        double dep_radius = (sc.initial_center_id != centralBodyIdx) ? GetBodyRadius(sc.initial_center_id) : 0.0;
+
         auto runVirtualFlight = [&](double dvv, double dvn, double dvb, double& out_v) {
             glm::dvec3 v_start = current_v + (V * dvv + N * dvn + B * dvb);
             glm::dvec3 r = current_r; glm::dvec3 v = v_start;
             double t = current_t;
-            double h_base = 10.0;
+            
+            // Adaptive timestep for interplanetary missions, static 10s for local (e.g. Moon) missions
+            double h_base = (centralBodyIdx == 10) ? 3600.0 : 10.0;
+            
             double elapsed_t = 0.0;
             double min_dist = 1e18; 
             bool isImpactMode = (targets[0].objective == MissionObjective::Impact);
@@ -761,8 +779,21 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 }
                 
                 double actual_h = h_base;
+                if (centralBodyIdx == 10) {
+                    if (d_to_target < target_radius * 150.0) actual_h = std::min(actual_h, 600.0);
+                    if (d_to_target < target_radius * 20.0) actual_h = std::min(actual_h, 60.0);
+                    
+                    if (sc.initial_center_id != centralBodyIdx && elapsed_t < 86400.0 * 20.0) {
+                        double stDep[6], ltDep; spkgeo_c(sc.initial_center_id, t, "J2000", centralBodyIdx, stDep, &ltDep);
+                        double d_to_dep = glm::length(r - glm::dvec3(stDep[0], stDep[1], stDep[2]));
+                        if (d_to_dep < dep_radius * 150.0) actual_h = std::min(actual_h, 600.0);
+                        if (d_to_dep < dep_radius * 20.0) actual_h = std::min(actual_h, 60.0);
+                        if (d_to_dep < dep_radius * 5.0) actual_h = std::min(actual_h, 10.0);
+                    }
+                }
+                
                 if (d_to_target < target_radius * 5.0)
-                    actual_h = isImpactMode ? std::min(h_base, 1.0) : std::min(h_base, 10.0);
+                    actual_h = isImpactMode ? std::min(actual_h, 1.0) : std::min(actual_h, 10.0);
                 
                 if (elapsed_t + actual_h > flight_duration) actual_h = flight_duration - elapsed_t;
                 if (actual_h < 1e-6) break;
@@ -781,19 +812,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
                         if (d_mag > 1.0 && rb_mag > 1.0)
                             a += -b.GM * (r_rel/(d_mag*d_mag*d_mag) + rb/(rb_mag*rb_mag*rb_mag));
                     }
-                    // J2 Perturbation for Central Body (matching ESMAT.exe)
-                    double cBody_J2 = 0.0;
-                    double cBody_Radius = 1.0;
-                    std::string cBody_Name = "EARTH";
-                    for (auto& b : planets) {
-                        if (b.SpiceID == centralBodyIdx) {
-                            cBody_J2 = b.J2;
-                            cBody_Radius = b.RadiusKM;
-                            cBody_Name = b.Name;
-                            break;
-                        }
-                    }
                     
+                    // J2 Perturbation for Central Body using hoisted constants
                     if (cBody_J2 > 1e-9) {
                         double R_mat[3][3]; std::string iau = "IAU_" + cBody_Name;
                         for(auto &c: iau) c=toupper(c); pxform_c(iau.c_str(), "J2000", et, R_mat);
