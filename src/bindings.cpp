@@ -36,6 +36,7 @@ struct SimulationSettings {
     std::string start_date;
     std::string end_date;
     std::vector<int> active_bodies;
+    double step_size_sec = 600.0;
 };
 
 class SpacecraftWrapper {
@@ -590,9 +591,6 @@ std::vector<BurnEntry> calculate_navigation_plan(
         if (best_dep > 0.0) {
             double wait_sec = best_dep * 86400.0;
             double t_current = base_et;
-            double h_wait = 10.0;
-            int steps_wait = (int)std::ceil(wait_sec / h_wait);
-            h_wait = wait_sec / steps_wait;
             
             // Central body for J2
             double cBody_J2 = 0.0;
@@ -606,17 +604,20 @@ std::vector<BurnEntry> calculate_navigation_plan(
                     break;
                 }
             }
-            
-            for (int s = 0; s < steps_wait; ++s) {
+            double mu_c = GetBodyGM(sc.initial_center_id);
+
+            while (wait_sec > 0.0) {
+                double h_wait = std::min(wait_sec, sim.step_size_sec);
+
                 auto get_acc_park = [&](glm::dvec3 p, double et) {
                     double rm = glm::length(p);
-                    glm::dvec3 a = -sc_mu * p / (rm*rm*rm);
+                    glm::dvec3 a = -mu_c * p / (rm*rm*rm);
                     if (cBody_J2 > 1e-9) {
                         double R_mat[3][3]; std::string iau = "IAU_" + cBody_Name;
                         for(auto &c: iau) c=toupper(c); pxform_c(iau.c_str(), "J2000", et, R_mat);
                         glm::dmat3 rot = glm::dmat3(R_mat[0][0],R_mat[1][0],R_mat[2][0],R_mat[0][1],R_mat[1][1],R_mat[2][1],R_mat[0][2],R_mat[1][2],R_mat[2][2]);
                         glm::dvec3 pl = glm::transpose(rot) * p; double r2=rm*rm; double r5=r2*r2*rm;
-                        double j2f = -1.5*cBody_J2*sc_mu*cBody_Radius*cBody_Radius/r5;
+                        double j2f = -1.5*cBody_J2*mu_c*cBody_Radius*cBody_Radius/r5;
                         a += rot * glm::dvec3(j2f*pl.x*(1.0-5.0*pl.z*pl.z/r2), j2f*pl.y*(1.0-5.0*pl.z*pl.z/r2), j2f*pl.z*(3.0-5.0*pl.z*pl.z/r2));
                     }
                     for (auto& b : planets) {
@@ -638,6 +639,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 current_v += (h_wait/6.0)*(k1v+2.0*k2v+2.0*k3v+k4v);
                 current_r += (h_wait/6.0)*(k1r+2.0*k2r+2.0*k3r+k4r);
                 t_current += h_wait;
+                wait_sec -= h_wait;
             }
         }
         
@@ -1023,7 +1025,8 @@ PYBIND11_MODULE(core, m) {
         .def(py::init<>())
         .def_readwrite("start_date", &SimulationSettings::start_date)
         .def_readwrite("end_date", &SimulationSettings::end_date)
-        .def_readwrite("active_bodies", &SimulationSettings::active_bodies);
+        .def_readwrite("active_bodies", &SimulationSettings::active_bodies)
+        .def_readwrite("step_size_sec", &SimulationSettings::step_size_sec);
 
     py::class_<SpacecraftWrapper>(m, "Spacecraft")
         .def(py::init<>())
