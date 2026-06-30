@@ -737,26 +737,28 @@ std::vector<BurnEntry> calculate_navigation_plan(
             glm::dvec3 v_start = current_v + (V * dvv + N * dvn + B * dvb);
             glm::dvec3 r = current_r; glm::dvec3 v = v_start;
             double t = current_t;
-            // Exact ESMAT.exe Integration Settings
-            double physics_dt = sim.step_size_sec / std::ceil(sim.step_size_sec / 1.0);
-            double flight_duration = tof_sec + 86400.0 * 2.0; // 2 days padding for delayed arrivals
+            double h_base = 10.0;
             double elapsed_t = 0.0;
             double min_dist = 1e18; 
             bool isImpactMode = (targets[0].objective == MissionObjective::Impact);
+            double flight_duration = tof_sec + 86400.0 * 2.0; // 2 days padding for delayed arrivals
             
             while (elapsed_t < flight_duration) {
                 double stT[6], lt; spkgeo_c(targets[0].spiceID, t, "J2000", centralBodyIdx, stT, &lt);
                 glm::dvec3 r_tgt(stT[0], stT[1], stT[2]);
                 glm::dvec3 v_tgt(stT[3], stT[4], stT[5]);
                 double d_to_target = glm::length(r - r_tgt);
-
+                
                 if (isImpactMode && d_to_target <= target_radius) {
                     min_dist = d_to_target;
                     out_v = glm::length(v - v_tgt);
                     break;
                 }
-
-                double actual_h = physics_dt;
+                
+                double actual_h = h_base;
+                if (d_to_target < target_radius * 5.0)
+                    actual_h = isImpactMode ? std::min(h_base, 1.0) : std::min(h_base, 10.0);
+                
                 if (elapsed_t + actual_h > flight_duration) actual_h = flight_duration - elapsed_t;
                 if (actual_h < 1e-6) break;
 
