@@ -608,12 +608,11 @@ std::vector<BurnEntry> calculate_navigation_plan(
             }
             double mu_c = GetBodyGM(sc.initial_center_id);
 
-            // Exactly match ESMAT.exe numSubSteps physics dt
-            double physics_dt = sim.step_size_sec / std::ceil(sim.step_size_sec / 1.0);
+            double h_wait_base = 10.0; // Precise steps for parking orbit
+            int steps_wait = (int)std::ceil(wait_sec / h_wait_base);
+            double h_wait = wait_sec / steps_wait;
 
-            while (wait_sec > 0.0) {
-                double h_wait = std::min(wait_sec, physics_dt);
-
+            for (int s = 0; s < steps_wait; ++s) {
                 auto get_acc_park = [&](glm::dvec3 p, double et) {
                     double rm = glm::length(p);
                     glm::dvec3 a = -mu_c * p / (rm*rm*rm);
@@ -644,7 +643,6 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 current_v += (h_wait/6.0)*(k1v+2.0*k2v+2.0*k3v+k4v);
                 current_r += (h_wait/6.0)*(k1r+2.0*k2r+2.0*k3r+k4r);
                 t_current += h_wait;
-                wait_sec -= h_wait;
             }
         }
         
