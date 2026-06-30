@@ -315,8 +315,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
     SimulationSettings& sim,
     NavigationPlanWrapper& nav_plan,
     double initial_delay_days,
-    int n_dep = 40,   // departure grid resolution (lower = faster, less accurate)
-    int n_tof = 40    // time-of-flight grid resolution
+    int n_dep = 200,   // departure grid resolution (matches ESMAT.exe 200 steps)
+    int n_tof = 120    // time-of-flight grid resolution (matches ESMAT.exe 120 steps)
 ) {
     std::vector<BurnEntry> table;
     std::vector<NavTarget>& targets = nav_plan.targets;
@@ -326,7 +326,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
     double start_et;
     str2et_c(sim.start_date.c_str(), &start_et);
     
-    double base_et = start_et; 
+    // CRITICAL FIX: Shift base_et by initial_delay_days BEFORE grid search!
+    double base_et = start_et + initial_delay_days * 86400.0; 
     
     int centralBodyIdx = 10; 
     if (sc.initial_center_id == 399 && targets[0].spiceID == 301) centralBodyIdx = 399; 
@@ -567,7 +568,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
     
     BurnEntry tmi;
     tmi.trigger = TriggerType::GET; 
-    // Match startETOffsetDays logic from main.cpp exactly (it is a double, NOT a float!)
+    // initial_delay_days is already baked into base_et!
+    // But we need to add it to the final GET output so it matches the mission epoch!
     double total_sec = (initial_delay_days + best_dep) * 86400.0;
     tmi.get_h = std::floor(total_sec / 3600.0);
     tmi.get_m = std::floor((total_sec - tmi.get_h * 3600.0) / 60.0);
@@ -1054,6 +1056,6 @@ PYBIND11_MODULE(core, m) {
     m.def("calculate_navigation_plan", &calculate_navigation_plan, 
         py::arg("spacecraft"), py::arg("simulation"), py::arg("targets"),
         py::arg("initial_delay_days") = 0.0,
-        py::arg("n_dep") = 40,
-        py::arg("n_tof") = 40);
+        py::arg("n_dep") = 200,
+        py::arg("n_tof") = 120);
 }
