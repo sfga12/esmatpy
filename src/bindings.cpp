@@ -884,9 +884,32 @@ std::vector<BurnEntry> calculate_navigation_plan(
                     step_b *= scale;
                 }
 
-                dv_v -= step_v * relax_factor;
-                dv_n -= step_n * relax_factor;
-                dv_b -= step_b * relax_factor;
+                double current_relax = relax_factor;
+                bool step_accepted = false;
+                
+                for (int ls = 0; ls < 6; ++ls) {
+                    double try_v = dv_v - step_v * current_relax;
+                    double try_n = dv_n - step_n * current_relax;
+                    double try_b = dv_b - step_b * current_relax;
+                    
+                    double try_d = runVirtualFlight(try_v, try_n, try_b, trash_v);
+                    double try_err = std::abs(try_d - r_peri_target);
+                    
+                    if (try_err < std::abs(err)) {
+                        dv_v = try_v;
+                        dv_n = try_n;
+                        dv_b = try_b;
+                        step_accepted = true;
+                        break;
+                    }
+                    current_relax *= 0.5;
+                }
+                
+                if (!step_accepted) {
+                    dv_v -= step_v * current_relax;
+                    dv_n -= step_n * current_relax;
+                    dv_b -= step_b * current_relax;
+                }
             }
             py::print("[PILOT] Iter", iter, ": Periapsis=", (int)d0, "km (Err:", (int)err, "km)", py::arg("flush")=true);
         }
