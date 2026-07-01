@@ -892,7 +892,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 py::print("[PILOT] Iter", iter, ": IMPACT at", (int)d0, "km from center - surface confirmed.", py::arg("flush")=true);
                 break;
             }
-            if (d0 < 0.1) break;
+            if (std::abs(err) < 0.1) break;
 
             double eps = 1e-4;
             if (sc.initial_center_id != centralBodyIdx) {
@@ -943,7 +943,15 @@ std::vector<BurnEntry> calculate_navigation_plan(
                         double test_b = dv_b - adj_b * current_lr;
                         double test_d = glm::length(runVirtualFlight(test_v, test_n, test_b, trash_v));
                         
-                        if (test_d < d0) {
+                        double test_err = test_d - r_peri_target;
+                        bool improved = false;
+                        if (targets[0].objective == MissionObjective::Impact) {
+                            improved = (test_d < d0);
+                        } else {
+                            improved = (std::abs(test_err) < std::abs(err));
+                        }
+                        
+                        if (improved) {
                             next_v = test_v; next_n = test_n; next_b = test_b;
                             accepted = true;
                             break;
