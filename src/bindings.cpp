@@ -878,7 +878,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
             }
             if (std::abs(err) < 0.1) break;
 
-            double eps = 1e-4;
+            double eps = 1e-2;
             double ddv = (runVirtualFlight(dv_v+eps,dv_n,dv_b,trash_v) - d0)/eps;
             double ddn = (runVirtualFlight(dv_v,dv_n+eps,dv_b,trash_v) - d0)/eps;
             double ddb = (runVirtualFlight(dv_v,dv_n,dv_b+eps,trash_v) - d0)/eps;
