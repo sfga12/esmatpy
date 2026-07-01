@@ -890,27 +890,26 @@ std::vector<BurnEntry> calculate_navigation_plan(
             double grad_mag = ddv*ddv + ddn*ddn + ddb*ddb;
             if (grad_mag > 1e-18) {
                 double step = err / grad_mag;
-                // Dynamic clamp: smaller adjustments when close to target to prevent oscillating/bouncing
-                double max_adj = 0.5;
-                double lr = 0.8;
-                if (sc.initial_center_id != centralBodyIdx) {
-                    max_adj = std::min(0.05, std::max(0.0005, std::abs(err) * 5e-9));
-                    lr = 0.2; // Damping factor for steep interplanetary gradient valleys
-                }
+                
+                double max_adj = (sc.initial_center_id != centralBodyIdx) ? 0.1 : 0.5;
+                double lr = 0.8; 
                 
                 double adj_v = step * ddv;
-                if (adj_v > max_adj) adj_v = max_adj;
-                if (adj_v < -max_adj) adj_v = -max_adj;
-                dv_v -= adj_v * lr;
-                
                 double adj_n = step * ddn;
-                if (adj_n > max_adj) adj_n = max_adj;
-                if (adj_n < -max_adj) adj_n = -max_adj;
-                dv_n -= adj_n * lr;
-                
                 double adj_b = step * ddb;
-                if (adj_b > max_adj) adj_b = max_adj;
-                if (adj_b < -max_adj) adj_b = -max_adj;
+                
+                // CRITICAL FIX: Clamp vector magnitude, NOT individual components!
+                // Clamping independently destroys the gradient direction causing severe oscillations.
+                double adj_mag = std::sqrt(adj_v*adj_v + adj_n*adj_n + adj_b*adj_b);
+                if (adj_mag > max_adj) {
+                    double scale = max_adj / adj_mag;
+                    adj_v *= scale;
+                    adj_n *= scale;
+                    adj_b *= scale;
+                }
+                
+                dv_v -= adj_v * lr;
+                dv_n -= adj_n * lr;
                 dv_b -= adj_b * lr;
             }
             py::print("[PILOT] Iter", iter, ": Periapsis=", (int)d0, "km (Err:", (int)err, "km)", py::arg("flush")=true);
