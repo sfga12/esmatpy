@@ -892,8 +892,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 double step_b = step * ddb;
                 double step_mag = std::sqrt(step_v*step_v + step_n*step_n + step_b*step_b);
 
-                double max_adj = (sc.initial_center_id != centralBodyIdx && centralBodyIdx == 10) ? 0.2 : 0.5; 
-                double relax_factor = (sc.initial_center_id != centralBodyIdx && centralBodyIdx == 10) ? 0.5 : 0.8;
+                double max_adj = (sc.initial_center_id != centralBodyIdx && centralBodyIdx == 10) ? 2.5 : 0.5; 
+                double relax_factor = (sc.initial_center_id != centralBodyIdx && centralBodyIdx == 10) ? 1.0 : 0.8;
 
                 if (step_mag > max_adj) {
                     double scale = max_adj / step_mag;
