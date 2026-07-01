@@ -780,20 +780,22 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 
                 double actual_h = h_base;
                 if (centralBodyIdx == 10) {
-                    if (d_to_target < target_radius * 150.0) actual_h = std::min(actual_h, 600.0);
-                    if (d_to_target < target_radius * 20.0) actual_h = std::min(actual_h, 60.0);
-                    
-                    if (sc.initial_center_id != centralBodyIdx && elapsed_t < 86400.0 * 20.0) {
-                        double stDep[6], ltDep; spkgeo_c(sc.initial_center_id, t, "J2000", centralBodyIdx, stDep, &ltDep);
-                        double d_to_dep = glm::length(r - glm::dvec3(stDep[0], stDep[1], stDep[2]));
-                        if (d_to_dep < dep_radius * 150.0) actual_h = std::min(actual_h, 600.0);
-                        if (d_to_dep < dep_radius * 20.0) actual_h = std::min(actual_h, 60.0);
-                        if (d_to_dep < dep_radius * 5.0) actual_h = std::min(actual_h, 10.0);
+                    // Time-based Departure (deterministic)
+                    if (sc.initial_center_id != centralBodyIdx) {
+                        if (elapsed_t < 86400.0 * 1.0) actual_h = std::min(actual_h, 10.0);
+                        else if (elapsed_t < 86400.0 * 5.0) actual_h = std::min(actual_h, 60.0);
+                        else if (elapsed_t < 86400.0 * 20.0) actual_h = std::min(actual_h, 600.0);
                     }
+                    
+                    // Time-based Arrival (deterministic)
+                    double time_to_arrival = std::abs(tof_sec - elapsed_t);
+                    if (time_to_arrival < 86400.0 * 1.0) actual_h = std::min(actual_h, 10.0);
+                    else if (time_to_arrival < 86400.0 * 5.0) actual_h = std::min(actual_h, 60.0);
+                    else if (time_to_arrival < 86400.0 * 20.0) actual_h = std::min(actual_h, 600.0);
                 }
                 
-                if (d_to_target < target_radius * 5.0)
-                    actual_h = isImpactMode ? std::min(actual_h, 1.0) : std::min(actual_h, 10.0);
+                if (isImpactMode && d_to_target < target_radius * 5.0)
+                    actual_h = std::min(actual_h, 1.0);
                 
                 if (elapsed_t + actual_h > flight_duration) actual_h = flight_duration - elapsed_t;
                 if (actual_h < 1e-6) break;
@@ -924,9 +926,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 }
                 
                 if (!step_accepted) {
-                    dv_v -= step_v * current_relax;
-                    dv_n -= step_n * current_relax;
-                    dv_b -= step_b * current_relax;
+                    py::print("[PILOT] Iter", iter, ": Line search exhausted. Local minimum reached.", py::arg("flush")=true);
+                    break;
                 }
             }
             py::print("[PILOT] Iter", iter, ": Periapsis=", (int)d0, "km (Err:", (int)err, "km)", py::arg("flush")=true);
