@@ -738,29 +738,11 @@ std::vector<BurnEntry> calculate_navigation_plan(
         
         double r_peri_target = target_radius + targets[0].targetAltKm;
         
-        // Hoist J2 constants for Central Body
-        double cBody_J2 = 0.0;
-        double cBody_Radius = 1.0;
-        std::string cBody_Name = "EARTH";
-        for (auto& b : planets) {
-            if (b.SpiceID == centralBodyIdx) {
-                cBody_J2 = b.J2;
-                cBody_Radius = b.RadiusKM;
-                cBody_Name = b.Name;
-                break;
-            }
-        }
-        
-        double dep_radius = (sc.initial_center_id != centralBodyIdx) ? GetBodyRadius(sc.initial_center_id) : 0.0;
-
         auto runVirtualFlight = [&](double dvv, double dvn, double dvb, double& out_v) {
             glm::dvec3 v_start = current_v + (V * dvv + N * dvn + B * dvb);
             glm::dvec3 r = current_r; glm::dvec3 v = v_start;
             double t = current_t;
-            
-            // Adaptive timestep for interplanetary missions, static 10s for local (e.g. Moon) missions
-            double h_base = (centralBodyIdx == 10) ? 3600.0 : 10.0;
-            
+            double h_base = 10.0;
             double elapsed_t = 0.0;
             double min_dist = 1e18; 
             bool isImpactMode = (targets[0].objective == MissionObjective::Impact);
@@ -779,23 +761,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 }
                 
                 double actual_h = h_base;
-                if (centralBodyIdx == 10) {
-                    // Time-based Departure (deterministic)
-                    if (sc.initial_center_id != centralBodyIdx) {
-                        if (elapsed_t < 86400.0 * 1.0) actual_h = std::min(actual_h, 10.0);
-                        else if (elapsed_t < 86400.0 * 5.0) actual_h = std::min(actual_h, 60.0);
-                        else if (elapsed_t < 86400.0 * 20.0) actual_h = std::min(actual_h, 600.0);
-                    }
-                    
-                    // Time-based Arrival (deterministic)
-                    double time_to_arrival = std::abs(tof_sec - elapsed_t);
-                    if (time_to_arrival < 86400.0 * 1.0) actual_h = std::min(actual_h, 10.0);
-                    else if (time_to_arrival < 86400.0 * 5.0) actual_h = std::min(actual_h, 60.0);
-                    else if (time_to_arrival < 86400.0 * 20.0) actual_h = std::min(actual_h, 600.0);
-                }
-                
-                if (isImpactMode && d_to_target < target_radius * 5.0)
-                    actual_h = std::min(actual_h, 1.0);
+                if (d_to_target < target_radius * 5.0)
+                    actual_h = isImpactMode ? std::min(h_base, 1.0) : std::min(h_base, 10.0);
                 
                 if (elapsed_t + actual_h > flight_duration) actual_h = flight_duration - elapsed_t;
                 if (actual_h < 1e-6) break;
@@ -814,8 +781,19 @@ std::vector<BurnEntry> calculate_navigation_plan(
                         if (d_mag > 1.0 && rb_mag > 1.0)
                             a += -b.GM * (r_rel/(d_mag*d_mag*d_mag) + rb/(rb_mag*rb_mag*rb_mag));
                     }
+                    // J2 Perturbation for Central Body (matching ESMAT.exe)
+                    double cBody_J2 = 0.0;
+                    double cBody_Radius = 1.0;
+                    std::string cBody_Name = "EARTH";
+                    for (auto& b : planets) {
+                        if (b.SpiceID == centralBodyIdx) {
+                            cBody_J2 = b.J2;
+                            cBody_Radius = b.RadiusKM;
+                            cBody_Name = b.Name;
+                            break;
+                        }
+                    }
                     
-                    // J2 Perturbation for Central Body using hoisted constants
                     if (cBody_J2 > 1e-9) {
                         double R_mat[3][3]; std::string iau = "IAU_" + cBody_Name;
                         for(auto &c: iau) c=toupper(c); pxform_c(iau.c_str(), "J2000", et, R_mat);
@@ -830,9 +808,6 @@ std::vector<BurnEntry> calculate_navigation_plan(
                     return a;
                 };
 
-                glm::dvec3 r_pre = r;
-                glm::dvec3 r_tgt_pre = r_tgt;
-
                 glm::dvec3 k1v=get_acc(r,t), k1r=v;
                 glm::dvec3 k2v=get_acc(r+k1r*(actual_h/2.0),t+actual_h/2.0), k2r=v+k1v*(actual_h/2.0);
                 glm::dvec3 k3v=get_acc(r+k2r*(actual_h/2.0),t+actual_h/2.0), k3r=v+k2v*(actual_h/2.0);
@@ -841,25 +816,10 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 r += (actual_h/6.0)*(k1r+2.0*k2r+2.0*k3r+k4r);
                 t += actual_h; elapsed_t += actual_h;
 
-                double stT_post[6], lt_post; spkgeo_c(targets[0].spiceID, t, "J2000", centralBodyIdx, stT_post, &lt_post);
-                glm::dvec3 r_tgt_post(stT_post[0], stT_post[1], stT_post[2]);
-                glm::dvec3 v_tgt_post(stT_post[3], stT_post[4], stT_post[5]);
-
-                glm::dvec3 p0 = r_pre - r_tgt_pre;
-                glm::dvec3 p1 = r - r_tgt_post;
-                glm::dvec3 v_seg = p1 - p0;
-
-                double len_sq = glm::dot(v_seg, v_seg);
-                double frac = (len_sq > 1e-12) ? std::clamp(-glm::dot(p0, v_seg) / len_sq, 0.0, 1.0) : 0.0;
-                glm::dvec3 proj = p0 + frac * v_seg;
-
-                double min_seg_dist = glm::length(proj);
-                if (min_seg_dist < min_dist) {
-                    min_dist = min_seg_dist;
-                    glm::dvec3 v_tgt_interp = v_tgt + frac * (v_tgt_post - v_tgt);
-                    glm::dvec3 v_interp = (r_pre + frac * (r - r_pre)); // approximate v is not needed here, we just use v_end or interpolate if we wanted. But out_v is just v - v_tgt.
-                    // Let's just use v_post for out_v to be safe
-                    out_v = glm::length(v - v_tgt_post);
+                double d_post = glm::length(r - r_tgt);
+                if (d_post < min_dist) {
+                    min_dist = d_post;
+                    out_v = glm::length(v - v_tgt);
                 }
             }
             return min_dist;
@@ -880,7 +840,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
             }
             if (std::abs(err) < 0.1) break;
 
-            double eps = 1e-2;
+            double eps = 1e-4;
             double ddv = (runVirtualFlight(dv_v+eps,dv_n,dv_b,trash_v) - d0)/eps;
             double ddn = (runVirtualFlight(dv_v,dv_n+eps,dv_b,trash_v) - d0)/eps;
             double ddb = (runVirtualFlight(dv_v,dv_n,dv_b+eps,trash_v) - d0)/eps;
@@ -888,47 +848,10 @@ std::vector<BurnEntry> calculate_navigation_plan(
             double grad_mag = ddv*ddv + ddn*ddn + ddb*ddb;
             if (grad_mag > 1e-18) {
                 double step = err / grad_mag;
-                
-                double step_v = step * ddv;
-                double step_n = step * ddn;
-                double step_b = step * ddb;
-                double step_mag = std::sqrt(step_v*step_v + step_n*step_n + step_b*step_b);
-
-                double max_adj = (sc.initial_center_id != centralBodyIdx && centralBodyIdx == 10) ? 2.5 : 0.5; 
-                double relax_factor = (sc.initial_center_id != centralBodyIdx && centralBodyIdx == 10) ? 1.0 : 0.8;
-
-                if (step_mag > max_adj) {
-                    double scale = max_adj / step_mag;
-                    step_v *= scale;
-                    step_n *= scale;
-                    step_b *= scale;
-                }
-
-                double current_relax = relax_factor;
-                bool step_accepted = false;
-                
-                for (int ls = 0; ls < 6; ++ls) {
-                    double try_v = dv_v - step_v * current_relax;
-                    double try_n = dv_n - step_n * current_relax;
-                    double try_b = dv_b - step_b * current_relax;
-                    
-                    double try_d = runVirtualFlight(try_v, try_n, try_b, trash_v);
-                    double try_err = std::abs(try_d - r_peri_target);
-                    
-                    if (try_err < std::abs(err)) {
-                        dv_v = try_v;
-                        dv_n = try_n;
-                        dv_b = try_b;
-                        step_accepted = true;
-                        break;
-                    }
-                    current_relax *= 0.5;
-                }
-                
-                if (!step_accepted) {
-                    py::print("[PILOT] Iter", iter, ": Line search exhausted. Local minimum reached.", py::arg("flush")=true);
-                    break;
-                }
+                double max_adj = (sc.initial_center_id != centralBodyIdx) ? 1.5 : 0.5; 
+                double adj_v = std::clamp(step * ddv, -max_adj, max_adj); dv_v -= adj_v * 0.8;
+                double adj_n = std::clamp(step * ddn, -max_adj, max_adj); dv_n -= adj_n * 0.8;
+                double adj_b = std::clamp(step * ddb, -max_adj, max_adj); dv_b -= adj_b * 0.8;
             }
             py::print("[PILOT] Iter", iter, ": Periapsis=", (int)d0, "km (Err:", (int)err, "km)", py::arg("flush")=true);
         }
