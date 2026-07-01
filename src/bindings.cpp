@@ -742,7 +742,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
             glm::dvec3 v_start = current_v + (V * dvv + N * dvn + B * dvb);
             glm::dvec3 r = current_r; glm::dvec3 v = v_start;
             double t = current_t;
-            double h_base = 10.0;
+            double h_base = (sc.initial_center_id != centralBodyIdx) ? 3600.0 : 10.0;
             double elapsed_t = 0.0;
             double min_dist = 1e18; 
             bool isImpactMode = (targets[0].objective == MissionObjective::Impact);
@@ -761,8 +761,15 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 }
                 
                 double actual_h = h_base;
+                if (sc.initial_center_id != centralBodyIdx) {
+                    // High-resolution integration during escape and capture phases (4 days escape, ~150 radii capture)
+                    if (elapsed_t < 86400.0 * 4.0 || d_to_target < target_radius * 150.0) {
+                        actual_h = 10.0;
+                    }
+                }
+                
                 if (d_to_target < target_radius * 5.0)
-                    actual_h = isImpactMode ? std::min(h_base, 1.0) : std::min(h_base, 10.0);
+                    actual_h = isImpactMode ? std::min(actual_h, 1.0) : std::min(actual_h, 10.0);
                 
                 if (elapsed_t + actual_h > flight_duration) actual_h = flight_duration - elapsed_t;
                 if (actual_h < 1e-6) break;
