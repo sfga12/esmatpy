@@ -908,9 +908,38 @@ std::vector<BurnEntry> calculate_navigation_plan(
                     adj_b *= scale;
                 }
                 
-                dv_v -= adj_v * lr;
-                dv_n -= adj_n * lr;
-                dv_b -= adj_b * lr;
+                double next_v = dv_v, next_n = dv_n, next_b = dv_b;
+                if (sc.initial_center_id != centralBodyIdx) {
+                    // Backtracking line search: guarantee monotonic descent!
+                    double current_lr = 1.0;
+                    bool accepted = false;
+                    for (int ls = 0; ls < 6; ++ls) {
+                        double test_v = dv_v - adj_v * current_lr;
+                        double test_n = dv_n - adj_n * current_lr;
+                        double test_b = dv_b - adj_b * current_lr;
+                        double test_d = runVirtualFlight(test_v, test_n, test_b, trash_v);
+                        
+                        if (test_d < d0) {
+                            next_v = test_v; next_n = test_n; next_b = test_b;
+                            accepted = true;
+                            break;
+                        }
+                        current_lr *= 0.25; // Shrink step aggressively if it bounces up
+                    }
+                    if (!accepted) {
+                        next_v = dv_v - adj_v * 0.01;
+                        next_n = dv_n - adj_n * 0.01;
+                        next_b = dv_b - adj_b * 0.01;
+                    }
+                } else {
+                    next_v = dv_v - adj_v * lr;
+                    next_n = dv_n - adj_n * lr;
+                    next_b = dv_b - adj_b * lr;
+                }
+                
+                dv_v = next_v;
+                dv_n = next_n;
+                dv_b = next_b;
             }
             py::print("[PILOT] Iter", iter, ": Periapsis=", (int)d0, "km (Err:", (int)err, "km)", py::arg("flush")=true);
         }
