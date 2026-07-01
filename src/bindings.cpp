@@ -959,7 +959,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
             }
             py::print("[PILOT] Iter", iter, ": Periapsis=", (int)d0, "km (Err:", (int)err, "km)", py::arg("flush")=true);
         }
-        py::print("[NAV] Virtual Pilot Converged at", (int)last_dist, "km radius (altitude:", (int)(last_dist - target_radius), "km).", py::arg("flush")=true);
+        py::print("[NAV] Virtual Pilot Converged at", (int)best_overall_dist, "km radius (altitude:", (int)(best_overall_dist - target_radius), "km).", py::arg("flush")=true);
         
         // Final Output as VNB
         // VNB convention: X=Velocity(prograde), Y=Normal(orbit-normal), Z=Binormal(radial)
