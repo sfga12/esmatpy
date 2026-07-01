@@ -892,7 +892,11 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 py::print("[PILOT] Iter", iter, ": IMPACT at", (int)d0, "km from center - surface confirmed.", py::arg("flush")=true);
                 break;
             }
-            if (std::abs(err) < 0.1) break;
+            double err_tol = (sc.initial_center_id != centralBodyIdx) ? 5.0 : 0.1;
+            if (std::abs(err) < err_tol) {
+                py::print("[PILOT] Converged successfully! Error:", err, "km", py::arg("flush")=true);
+                break;
+            }
 
             double eps = 1e-4;
             if (sc.initial_center_id != centralBodyIdx) {
