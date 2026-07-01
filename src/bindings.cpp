@@ -734,17 +734,17 @@ std::vector<BurnEntry> calculate_navigation_plan(
             SpiceInt n;
             bodvcd_c(j2CentralID, "J2", 1, &n, &j2);
         }
-        // If not in kernel, J2 stays 0
         
         double r_peri_target = target_radius + targets[0].targetAltKm;
         
-        auto runVirtualFlight = [&](double dvv, double dvn, double dvb, double& out_v) {
+        auto runVirtualFlight = [&](double dvv, double dvn, double dvb, double& out_v) -> glm::dvec3 {
             glm::dvec3 v_start = current_v + (V * dvv + N * dvn + B * dvb);
             glm::dvec3 r = current_r; glm::dvec3 v = v_start;
             double t = current_t;
             double h_base = (sc.initial_center_id != centralBodyIdx) ? 3600.0 : 10.0;
             double elapsed_t = 0.0;
             double min_dist = 1e18; 
+            glm::dvec3 best_r_rel(1e18, 0, 0);
             bool isImpactMode = (targets[0].objective == MissionObjective::Impact);
             double flight_duration = tof_sec + 86400.0 * 2.0; // 2 days padding for delayed arrivals
             
@@ -768,9 +768,11 @@ std::vector<BurnEntry> calculate_navigation_plan(
                     double ddot1 = glm::dot(dr1, dv1);
                     if (ddot0 < 0.0 && ddot1 >= 0.0) {
                         double s = -ddot0 / (ddot1 - ddot0 + 1e-18);
-                        double exact_d = glm::length(dr0 + s * (dr1 - dr0));
+                        glm::dvec3 exact_r_rel = dr0 + s * (dr1 - dr0);
+                        double exact_d = glm::length(exact_r_rel);
                         if (exact_d < min_dist) {
                             min_dist = exact_d;
+                            best_r_rel = exact_r_rel;
                             out_v = glm::length((prev_v + s*(v - prev_v)) - (prev_vtgt + s*(v_tgt - prev_vtgt)));
                         }
                     }
@@ -781,13 +783,13 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 
                 if (isImpactMode && d_to_target <= target_radius) {
                     min_dist = d_to_target;
+                    best_r_rel = r - r_tgt;
                     out_v = glm::length(v - v_tgt);
                     break;
                 }
                 
                 double actual_h = h_base;
                 if (sc.initial_center_id != centralBodyIdx) {
-                    // Aggressive time-deterministic schedule (eliminates grid noise AND runs much faster)
                     if (elapsed_t < 3600.0 * 2.0) actual_h = 10.0;
                     else if (elapsed_t < 3600.0 * 12.0) actual_h = 60.0;
                     else if (elapsed_t < 86400.0 * 2.0) actual_h = 600.0;
@@ -797,7 +799,6 @@ std::vector<BurnEntry> calculate_navigation_plan(
                     else if (time_to_arrival < 86400.0 * 1.0) actual_h = std::min(actual_h, 60.0);
                     else if (time_to_arrival < 86400.0 * 5.0) actual_h = std::min(actual_h, 600.0);
                 } else {
-                    // Local flights (Moon)
                     if (d_to_target < target_radius * 5.0)
                         actual_h = isImpactMode ? std::min(actual_h, 1.0) : std::min(actual_h, 10.0);
                 }
@@ -819,7 +820,6 @@ std::vector<BurnEntry> calculate_navigation_plan(
                         if (d_mag > 1.0 && rb_mag > 1.0)
                             a += -b.GM * (r_rel/(d_mag*d_mag*d_mag) + rb/(rb_mag*rb_mag*rb_mag));
                     }
-                    // J2 Perturbation for Central Body (matching ESMAT.exe)
                     double cBody_J2 = 0.0;
                     double cBody_Radius = 1.0;
                     std::string cBody_Name = "EARTH";
@@ -857,10 +857,11 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 double d_post = glm::length(r - r_tgt);
                 if (d_post < min_dist) {
                     min_dist = d_post;
+                    best_r_rel = r - r_tgt;
                     out_v = glm::length(v - v_tgt);
                 }
             }
-            return min_dist;
+            return best_r_rel;
         };
 
         double trash_v;
@@ -869,7 +870,8 @@ std::vector<BurnEntry> calculate_navigation_plan(
         int stuck_counter = 0;
         
         for (int iter = 0; iter < max_iters; ++iter) {
-            double d0 = runVirtualFlight(dv_v, dv_n, dv_b, actual_peri_v);
+            glm::dvec3 d0_vec = runVirtualFlight(dv_v, dv_n, dv_b, actual_peri_v);
+            double d0 = glm::length(d0_vec);
             double err = d0 - r_peri_target;
             
             if (d0 < best_overall_dist - 1000.0) {
@@ -880,9 +882,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
             }
             
             if (stuck_counter > 5 && sc.initial_center_id != centralBodyIdx && best_overall_dist > 500000.0) {
-                // Trapped in Aphelion Kink (trajectory falls short of Mars orbit).
-                // Kick the energy (V) to force an intersection!
-                dv_v += 0.2; // +200 m/s
+                dv_v += 0.2;
                 stuck_counter = 0;
                 py::print("[PILOT] Trapped in local minimum (Aphelion Kink). Kicking dv_v +200 m/s...", py::arg("flush")=true);
                 continue;
@@ -892,30 +892,38 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 py::print("[PILOT] Iter", iter, ": IMPACT at", (int)d0, "km from center - surface confirmed.", py::arg("flush")=true);
                 break;
             }
-            if (std::abs(err) < 0.1) break;
+            if (d0 < 0.1) break;
 
             double eps = 1e-4;
             if (sc.initial_center_id != centralBodyIdx) {
-                eps = std::max(1e-4, std::min(1e-2, std::abs(err) * 1e-8));
+                eps = std::max(1e-4, std::min(1e-2, d0 * 1e-8));
             }
             
-            double ddv = (runVirtualFlight(dv_v+eps,dv_n,dv_b,trash_v) - d0)/eps;
-            double ddn = (runVirtualFlight(dv_v,dv_n+eps,dv_b,trash_v) - d0)/eps;
-            double ddb = (runVirtualFlight(dv_v,dv_n,dv_b+eps,trash_v) - d0)/eps;
+            glm::dvec3 dv_vec_sim = runVirtualFlight(dv_v+eps,dv_n,dv_b,trash_v);
+            glm::dvec3 dn_vec_sim = runVirtualFlight(dv_v,dv_n+eps,dv_b,trash_v);
+            glm::dvec3 db_vec_sim = runVirtualFlight(dv_v,dv_n,dv_b+eps,trash_v);
 
-            double grad_mag = ddv*ddv + ddn*ddn + ddb*ddb;
-            if (grad_mag > 1e-18) {
-                double step = err / grad_mag;
+            glm::dvec3 J_v = (dv_vec_sim - d0_vec) / eps;
+            glm::dvec3 J_n = (dn_vec_sim - d0_vec) / eps;
+            glm::dvec3 J_b = (db_vec_sim - d0_vec) / eps;
+            
+            glm::dmat3 J(J_v, J_n, J_b);
+            double det = glm::determinant(J);
+            
+            if (std::abs(det) > 1e-18) {
+                glm::dvec3 err_vec = d0_vec;
+                if (targets[0].objective != MissionObjective::Impact && d0 > 1.0) {
+                    err_vec = d0_vec * (1.0 - r_peri_target / d0);
+                }
+                
+                glm::dvec3 step = glm::inverse(J) * err_vec;
                 
                 double max_adj = (sc.initial_center_id != centralBodyIdx) ? 0.1 : 0.5;
-                double lr = 0.8; 
                 
-                double adj_v = step * ddv;
-                double adj_n = step * ddn;
-                double adj_b = step * ddb;
+                double adj_v = step.x;
+                double adj_n = step.y;
+                double adj_b = step.z;
                 
-                // CRITICAL FIX: Clamp vector magnitude, NOT individual components!
-                // Clamping independently destroys the gradient direction causing severe oscillations.
                 double adj_mag = std::sqrt(adj_v*adj_v + adj_n*adj_n + adj_b*adj_b);
                 if (adj_mag > max_adj) {
                     double scale = max_adj / adj_mag;
@@ -933,7 +941,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
                         double test_v = dv_v - adj_v * current_lr;
                         double test_n = dv_n - adj_n * current_lr;
                         double test_b = dv_b - adj_b * current_lr;
-                        double test_d = runVirtualFlight(test_v, test_n, test_b, trash_v);
+                        double test_d = glm::length(runVirtualFlight(test_v, test_n, test_b, trash_v));
                         
                         if (test_d < d0) {
                             next_v = test_v; next_n = test_n; next_b = test_b;
@@ -948,9 +956,9 @@ std::vector<BurnEntry> calculate_navigation_plan(
                         next_b = dv_b - adj_b * 0.01;
                     }
                 } else {
-                    next_v = dv_v - adj_v * lr;
-                    next_n = dv_n - adj_n * lr;
-                    next_b = dv_b - adj_b * lr;
+                    next_v = dv_v - adj_v * 0.8;
+                    next_n = dv_n - adj_n * 0.8;
+                    next_b = dv_b - adj_b * 0.8;
                 }
                 
                 dv_v = next_v;
