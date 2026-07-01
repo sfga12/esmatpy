@@ -762,16 +762,20 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 
                 double actual_h = h_base;
                 if (sc.initial_center_id != centralBodyIdx) {
-                    // Time-deterministic high-resolution integration (first 4 days, and last 5 days + padding)
-                    // This eliminates integration grid noise for the finite-difference Jacobian!
-                    if (elapsed_t < 86400.0 * 4.0 || elapsed_t > tof_sec - 86400.0 * 5.0) {
-                        actual_h = 10.0;
-                    }
+                    // Aggressive time-deterministic schedule (eliminates grid noise AND runs much faster)
+                    if (elapsed_t < 3600.0 * 2.0) actual_h = 10.0;
+                    else if (elapsed_t < 3600.0 * 12.0) actual_h = 60.0;
+                    else if (elapsed_t < 86400.0 * 2.0) actual_h = 600.0;
+                    
+                    double time_to_arrival = tof_sec - elapsed_t;
+                    if (time_to_arrival < 3600.0 * 4.0) actual_h = std::min(actual_h, 10.0);
+                    else if (time_to_arrival < 86400.0 * 1.0) actual_h = std::min(actual_h, 60.0);
+                    else if (time_to_arrival < 86400.0 * 5.0) actual_h = std::min(actual_h, 600.0);
+                } else {
+                    // Local flights (Moon)
+                    if (d_to_target < target_radius * 5.0)
+                        actual_h = isImpactMode ? std::min(actual_h, 1.0) : std::min(actual_h, 10.0);
                 }
-                
-                // Final impact phase is also slightly noisy if state-dependent, but we keep it small
-                if (d_to_target < target_radius * 5.0)
-                    actual_h = isImpactMode ? std::min(actual_h, 1.0) : std::min(actual_h, 10.0);
                 
                 if (elapsed_t + actual_h > flight_duration) actual_h = flight_duration - elapsed_t;
                 if (actual_h < 1e-6) break;
@@ -857,10 +861,22 @@ std::vector<BurnEntry> calculate_navigation_plan(
             double grad_mag = ddv*ddv + ddn*ddn + ddb*ddb;
             if (grad_mag > 1e-18) {
                 double step = err / grad_mag;
-                double max_adj = 0.5;
-                double adj_v = std::clamp(step * ddv, -max_adj, max_adj); dv_v -= adj_v * 0.8;
-                double adj_n = std::clamp(step * ddn, -max_adj, max_adj); dv_n -= adj_n * 0.8;
-                double adj_b = std::clamp(step * ddb, -max_adj, max_adj); dv_b -= adj_b * 0.8;
+                double max_adj = (sc.initial_center_id != centralBodyIdx) ? 0.05 : 0.5;
+                
+                double adj_v = step * ddv;
+                if (adj_v > max_adj) adj_v = max_adj;
+                if (adj_v < -max_adj) adj_v = -max_adj;
+                dv_v -= adj_v * 0.8;
+                
+                double adj_n = step * ddn;
+                if (adj_n > max_adj) adj_n = max_adj;
+                if (adj_n < -max_adj) adj_n = -max_adj;
+                dv_n -= adj_n * 0.8;
+                
+                double adj_b = step * ddb;
+                if (adj_b > max_adj) adj_b = max_adj;
+                if (adj_b < -max_adj) adj_b = -max_adj;
+                dv_b -= adj_b * 0.8;
             }
             py::print("[PILOT] Iter", iter, ": Periapsis=", (int)d0, "km (Err:", (int)err, "km)", py::arg("flush")=true);
         }
