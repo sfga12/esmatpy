@@ -864,13 +864,29 @@ std::vector<BurnEntry> calculate_navigation_plan(
         };
 
         double trash_v;
-        double last_dist = 0;
         int max_iters = (sc.initial_center_id != centralBodyIdx) ? 150 : 50;
+        double best_overall_dist = 1e18;
+        int stuck_counter = 0;
         
         for (int iter = 0; iter < max_iters; ++iter) {
             double d0 = runVirtualFlight(dv_v, dv_n, dv_b, actual_peri_v);
-            last_dist = d0;
             double err = d0 - r_peri_target;
+            
+            if (d0 < best_overall_dist - 1000.0) {
+                best_overall_dist = d0;
+                stuck_counter = 0;
+            } else {
+                stuck_counter++;
+            }
+            
+            if (stuck_counter > 5 && sc.initial_center_id != centralBodyIdx && best_overall_dist > 500000.0) {
+                // Trapped in Aphelion Kink (trajectory falls short of Mars orbit).
+                // Kick the energy (V) to force an intersection!
+                dv_v += 0.2; // +200 m/s
+                stuck_counter = 0;
+                py::print("[PILOT] Trapped in local minimum (Aphelion Kink). Kicking dv_v +200 m/s...", py::arg("flush")=true);
+                continue;
+            }
             
             if (targets[0].objective == MissionObjective::Impact && d0 <= r_peri_target) {
                 py::print("[PILOT] Iter", iter, ": IMPACT at", (int)d0, "km from center - surface confirmed.", py::arg("flush")=true);
