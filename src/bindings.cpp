@@ -828,6 +828,9 @@ std::vector<BurnEntry> calculate_navigation_plan(
                     return a;
                 };
 
+                glm::dvec3 r_pre = r;
+                glm::dvec3 r_tgt_pre = r_tgt;
+
                 glm::dvec3 k1v=get_acc(r,t), k1r=v;
                 glm::dvec3 k2v=get_acc(r+k1r*(actual_h/2.0),t+actual_h/2.0), k2r=v+k1v*(actual_h/2.0);
                 glm::dvec3 k3v=get_acc(r+k2r*(actual_h/2.0),t+actual_h/2.0), k3r=v+k2v*(actual_h/2.0);
@@ -836,10 +839,25 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 r += (actual_h/6.0)*(k1r+2.0*k2r+2.0*k3r+k4r);
                 t += actual_h; elapsed_t += actual_h;
 
-                double d_post = glm::length(r - r_tgt);
-                if (d_post < min_dist) {
-                    min_dist = d_post;
-                    out_v = glm::length(v - v_tgt);
+                double stT_post[6], lt_post; spkgeo_c(targets[0].spiceID, t, "J2000", centralBodyIdx, stT_post, &lt_post);
+                glm::dvec3 r_tgt_post(stT_post[0], stT_post[1], stT_post[2]);
+                glm::dvec3 v_tgt_post(stT_post[3], stT_post[4], stT_post[5]);
+
+                glm::dvec3 p0 = r_pre - r_tgt_pre;
+                glm::dvec3 p1 = r - r_tgt_post;
+                glm::dvec3 v_seg = p1 - p0;
+
+                double len_sq = glm::dot(v_seg, v_seg);
+                double frac = (len_sq > 1e-12) ? std::clamp(-glm::dot(p0, v_seg) / len_sq, 0.0, 1.0) : 0.0;
+                glm::dvec3 proj = p0 + frac * v_seg;
+
+                double min_seg_dist = glm::length(proj);
+                if (min_seg_dist < min_dist) {
+                    min_dist = min_seg_dist;
+                    glm::dvec3 v_tgt_interp = v_tgt + frac * (v_tgt_post - v_tgt);
+                    glm::dvec3 v_interp = (r_pre + frac * (r - r_pre)); // approximate v is not needed here, we just use v_end or interpolate if we wanted. But out_v is just v - v_tgt.
+                    // Let's just use v_post for out_v to be safe
+                    out_v = glm::length(v - v_tgt_post);
                 }
             }
             return min_dist;
