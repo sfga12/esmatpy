@@ -762,12 +762,14 @@ std::vector<BurnEntry> calculate_navigation_plan(
                 
                 double actual_h = h_base;
                 if (sc.initial_center_id != centralBodyIdx) {
-                    // High-resolution integration during escape and capture phases (4 days escape, ~150 radii capture)
-                    if (elapsed_t < 86400.0 * 4.0 || d_to_target < target_radius * 150.0) {
+                    // Time-deterministic high-resolution integration (first 4 days, and last 5 days + padding)
+                    // This eliminates integration grid noise for the finite-difference Jacobian!
+                    if (elapsed_t < 86400.0 * 4.0 || elapsed_t > tof_sec - 86400.0 * 5.0) {
                         actual_h = 10.0;
                     }
                 }
                 
+                // Final impact phase is also slightly noisy if state-dependent, but we keep it small
                 if (d_to_target < target_radius * 5.0)
                     actual_h = isImpactMode ? std::min(actual_h, 1.0) : std::min(actual_h, 10.0);
                 
@@ -855,7 +857,7 @@ std::vector<BurnEntry> calculate_navigation_plan(
             double grad_mag = ddv*ddv + ddn*ddn + ddb*ddb;
             if (grad_mag > 1e-18) {
                 double step = err / grad_mag;
-                double max_adj = (sc.initial_center_id != centralBodyIdx) ? 1.5 : 0.5; 
+                double max_adj = 0.5;
                 double adj_v = std::clamp(step * ddv, -max_adj, max_adj); dv_v -= adj_v * 0.8;
                 double adj_n = std::clamp(step * ddn, -max_adj, max_adj); dv_n -= adj_n * 0.8;
                 double adj_b = std::clamp(step * ddb, -max_adj, max_adj); dv_b -= adj_b * 0.8;
