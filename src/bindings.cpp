@@ -748,11 +748,36 @@ std::vector<BurnEntry> calculate_navigation_plan(
             bool isImpactMode = (targets[0].objective == MissionObjective::Impact);
             double flight_duration = tof_sec + 86400.0 * 2.0; // 2 days padding for delayed arrivals
             
+            glm::dvec3 prev_r = r;
+            glm::dvec3 prev_v = v;
+            glm::dvec3 prev_rtgt(0), prev_vtgt(0);
+            bool has_prev = false;
+
             while (elapsed_t < flight_duration) {
                 double stT[6], lt; spkgeo_c(targets[0].spiceID, t, "J2000", centralBodyIdx, stT, &lt);
                 glm::dvec3 r_tgt(stT[0], stT[1], stT[2]);
                 glm::dvec3 v_tgt(stT[3], stT[4], stT[5]);
                 double d_to_target = glm::length(r - r_tgt);
+                
+                if (has_prev) {
+                    glm::dvec3 dr0 = prev_r - prev_rtgt;
+                    glm::dvec3 dv0 = prev_v - prev_vtgt;
+                    glm::dvec3 dr1 = r - r_tgt;
+                    glm::dvec3 dv1 = v - v_tgt;
+                    double ddot0 = glm::dot(dr0, dv0);
+                    double ddot1 = glm::dot(dr1, dv1);
+                    if (ddot0 < 0.0 && ddot1 >= 0.0) {
+                        double s = -ddot0 / (ddot1 - ddot0 + 1e-18);
+                        double exact_d = glm::length(dr0 + s * (dr1 - dr0));
+                        if (exact_d < min_dist) {
+                            min_dist = exact_d;
+                            out_v = glm::length((prev_v + s*(v - prev_v)) - (prev_vtgt + s*(v_tgt - prev_vtgt)));
+                        }
+                    }
+                }
+                prev_r = r; prev_v = v;
+                prev_rtgt = r_tgt; prev_vtgt = v_tgt;
+                has_prev = true;
                 
                 if (isImpactMode && d_to_target <= target_radius) {
                     min_dist = d_to_target;
@@ -854,6 +879,10 @@ std::vector<BurnEntry> calculate_navigation_plan(
             if (std::abs(err) < 0.1) break;
 
             double eps = 1e-4;
+            if (sc.initial_center_id != centralBodyIdx) {
+                eps = std::max(1e-4, std::min(1e-2, std::abs(err) * 1e-8));
+            }
+            
             double ddv = (runVirtualFlight(dv_v+eps,dv_n,dv_b,trash_v) - d0)/eps;
             double ddn = (runVirtualFlight(dv_v,dv_n+eps,dv_b,trash_v) - d0)/eps;
             double ddb = (runVirtualFlight(dv_v,dv_n,dv_b+eps,trash_v) - d0)/eps;
